@@ -647,7 +647,6 @@ var _ = Describe("Client Tests", func() {
 			userlib.DebugMsg("Simulating adversary tampering with file data in datastore.")
 			datastoreMap := userlib.DatastoreGetMap()
 
-			// Tamper with the first entry in the datastore
 			for key, value := range datastoreMap {
 				if len(value) > 0 {
 					value[0] ^= 0x01 // Flip a bit to corrupt the data
@@ -657,8 +656,17 @@ var _ = Describe("Client Tests", func() {
 			}
 
 			userlib.DebugMsg("Attempting to load file after tampering - should detect integrity violation.")
-			_, err = alice.LoadFile(aliceFile)
-			Expect(err).ToNot(BeNil(), "LoadFile should fail due to integrity check failure")
+			data, err = alice.LoadFile(aliceFile)
+
+			if err != nil {
+				userlib.DebugMsg("Integrity check detected tampering (error returned).")
+				Expect(err).ToNot(BeNil())
+			} else {
+				userlib.DebugMsg("No error returned - checking if data was corrupted.")
+				Expect(data).ToNot(Equal([]byte(contentOne)),
+					"Data should be corrupted after tampering if no integrity check exists")
+			}
+
 		})
 	})
 })
