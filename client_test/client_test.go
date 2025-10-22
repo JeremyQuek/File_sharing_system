@@ -628,4 +628,38 @@ var _ = Describe("Client Tests", func() {
 			Expect(bw).To(BeNumerically("<", 10000))
 		})
 	})
+
+	Describe("File Integrity Testing", func() {
+		Specify("Integrity Test: Testing detection of file data tampering.", func() {
+			userlib.DebugMsg("Initializing user Alice.")
+			alice, err = client.InitUser("alice", defaultPassword)
+			Expect(err).To(BeNil())
+
+			userlib.DebugMsg("Alice storing file %s with content: %s", aliceFile, contentOne)
+			err = alice.StoreFile(aliceFile, []byte(contentOne))
+			Expect(err).To(BeNil())
+
+			userlib.DebugMsg("Verifying Alice can load the file normally.")
+			data, err := alice.LoadFile(aliceFile)
+			Expect(err).To(BeNil())
+			Expect(data).To(Equal([]byte(contentOne)))
+
+			userlib.DebugMsg("Simulating adversary tampering with file data in datastore.")
+			datastoreMap := userlib.DatastoreGetMap()
+
+			// Tamper with the first entry in the datastore
+			for key, value := range datastoreMap {
+				if len(value) > 0 {
+					value[0] ^= 0x01 // Flip a bit to corrupt the data
+					userlib.DatastoreSet(key, value)
+					userlib.DebugMsg("Tampered with datastore entry")
+					break
+				}
+			}
+
+			userlib.DebugMsg("Attempting to load file after tampering - should detect integrity violation.")
+			_, err = alice.LoadFile(aliceFile)
+			Expect(err).ToNot(BeNil(), "LoadFile should fail due to integrity check failure")
+		})
+	})
 })
