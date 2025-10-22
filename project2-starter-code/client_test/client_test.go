@@ -9,6 +9,7 @@ import (
 	_ "encoding/hex"
 	_ "errors"
 	_ "strconv"
+	"strings"
 	_ "strings"
 	"testing"
 
@@ -208,7 +209,6 @@ var _ = Describe("Client Tests", func() {
 			data, err = bob.LoadFile(bobFile)
 			Expect(err).To(BeNil())
 			Expect(data).To(Equal([]byte(contentOne)))
-
 			userlib.DebugMsg("Bob creating invite for Charles for file %s, and Charlie accepting invite under name %s.", bobFile, charlesFile)
 			invite, err = bob.CreateInvitation(bobFile, "charles")
 			Expect(err).To(BeNil())
@@ -250,5 +250,113 @@ var _ = Describe("Client Tests", func() {
 			Expect(err).ToNot(BeNil())
 		})
 
+		// User-auth
+
+		Specify("Case-sensitive usernames", func() {
+			alice, err = client.InitUser("alice", defaultPassword)
+			Expect(err).To(BeNil())
+
+			aliceUpper, err := client.InitUser("Alice", defaultPassword)
+			Expect(err).To(BeNil())
+
+			// Both should be different users
+			err = alice.StoreFile(aliceFile, []byte(contentOne))
+			Expect(err).To(BeNil())
+
+			err = aliceUpper.StoreFile(aliceFile, []byte(contentTwo))
+			Expect(err).To(BeNil())
+
+			data, err := alice.LoadFile(aliceFile)
+			Expect(err).To(BeNil())
+			Expect(data).To(Equal([]byte(contentOne)))
+
+			data, err = aliceUpper.LoadFile(aliceFile)
+			Expect(err).To(BeNil())
+			Expect(data).To(Equal([]byte(contentTwo)))
+		})
+
+		Specify("Special characters in username", func() {
+			_, err = client.InitUser("alice@email.com", defaultPassword)
+			Expect(err).To(BeNil())
+
+			_, err = client.InitUser("user-name_123", defaultPassword)
+			Expect(err).To(BeNil())
+
+			_, err = client.InitUser("user with spaces", defaultPassword)
+			Expect(err).To(BeNil())
+		})
+
+		Specify("Empty password is valid", func() {
+			alice, err = client.InitUser("alice", "")
+			Expect(err).To(BeNil())
+
+			aliceLaptop, err = client.GetUser("alice", "")
+			Expect(err).To(BeNil())
+
+			err = alice.StoreFile(aliceFile, []byte(contentOne))
+			Expect(err).To(BeNil())
+
+			data, err := aliceLaptop.LoadFile(aliceFile)
+			Expect(err).To(BeNil())
+			Expect(data).To(Equal([]byte(contentOne)))
+		})
+
+		Specify("Long username and password", func() {
+			longUsername := strings.Repeat("a", 1000)
+			longPassword := strings.Repeat("p", 1000)
+
+			alice, err = client.InitUser(longUsername, longPassword)
+			Expect(err).To(BeNil())
+
+			aliceLaptop, err = client.GetUser(longUsername, longPassword)
+			Expect(err).To(BeNil())
+		})
+
+		Specify("Password change should fail (implicit test)", func() {
+			alice, err = client.InitUser("alice", "password1")
+			Expect(err).To(BeNil())
+
+			// Try to "change" password by creating user again
+			_, err = client.InitUser("alice", "password2")
+			Expect(err).ToNot(BeNil())
+
+			// Original password should still work
+			aliceLaptop, err = client.GetUser("alice", "password1")
+			Expect(err).To(BeNil())
+
+			// New password should not work
+			_, err = client.GetUser("alice", "password2")
+			Expect(err).ToNot(BeNil())
+		})
+
+		Specify("Multiple concurrent sessions for same user", func() {
+			alice, err = client.InitUser("alice", defaultPassword)
+			Expect(err).To(BeNil())
+
+			aliceLaptop, err = client.GetUser("alice", defaultPassword)
+			Expect(err).To(BeNil())
+
+			alicePhone, err = client.GetUser("alice", defaultPassword)
+			Expect(err).To(BeNil())
+
+			aliceDesktop, err = client.GetUser("alice", defaultPassword)
+			Expect(err).To(BeNil())
+
+			// All sessions should be independent but see same data
+			err = alice.StoreFile(aliceFile, []byte(contentOne))
+			Expect(err).To(BeNil())
+
+			data, err := aliceLaptop.LoadFile(aliceFile)
+			Expect(err).To(BeNil())
+			Expect(data).To(Equal([]byte(contentOne)))
+
+			data, err = alicePhone.LoadFile(aliceFile)
+			Expect(err).To(BeNil())
+			Expect(data).To(Equal([]byte(contentOne)))
+
+			data, err = aliceDesktop.LoadFile(aliceFile)
+			Expect(err).To(BeNil())
+			Expect(data).To(Equal([]byte(contentOne)))
+		})
 	})
 })
