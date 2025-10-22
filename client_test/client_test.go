@@ -653,7 +653,6 @@ var _ = Describe("Client Tests", func() {
 					value[0] ^= 0x01 // Flip a bit to corrupt the data
 					userlib.DatastoreSet(key, value)
 					userlib.DebugMsg("Tampered with datastore entry")
-					break
 				}
 			}
 
