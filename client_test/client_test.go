@@ -668,5 +668,35 @@ var _ = Describe("Client Tests", func() {
 			}
 
 		})
+		Specify("Integrity Test: Testing invite tampering detection.", func() {
+			userlib.DebugMsg("Initializing users Alice and Bob.")
+			alice, err = client.InitUser("alice", defaultPassword)
+			Expect(err).To(BeNil())
+
+			bob, err = client.InitUser("bob", defaultPassword)
+			Expect(err).To(BeNil())
+
+			userlib.DebugMsg("Alice storing file and creating invite for Bob.")
+			err = alice.StoreFile(aliceFile, []byte(contentOne))
+			Expect(err).To(BeNil())
+
+			invite, err := alice.CreateInvitation(aliceFile, "bob")
+			Expect(err).To(BeNil())
+
+			userlib.DebugMsg("Tampering with the invite by modifying datastore.")
+			// Instead of tampering with the UUID, tamper with what it points to
+			inviteData, ok := userlib.DatastoreGet(invite)
+			Expect(ok).To(BeTrue(), "Invite data should exist in datastore")
+
+			// Corrupt the invite data
+			if len(inviteData) > 0 {
+				inviteData[0] ^= 0x01 // Flip a bit
+				userlib.DatastoreSet(invite, inviteData)
+			}
+
+			userlib.DebugMsg("Bob attempting to accept tampered invite - should fail.")
+			err = bob.AcceptInvitation("alice", invite, bobFile)
+			Expect(err).ToNot(BeNil(), "AcceptInvitation should reject tampered invite data")
+		})
 	})
 })
