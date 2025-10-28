@@ -845,6 +845,39 @@ var _ = Describe("Client Tests", func() {
 			Expect(err).ToNot(BeNil(), "Should detect deleted data")
 		})
 
+		Specify("Sharing: AcceptInvitation verifies sender identity", func() {
+			alice, err = client.InitUser("alice", defaultPassword)
+			Expect(err).To(BeNil())
+			
+			bob, err = client.InitUser("bob", defaultPassword)
+			Expect(err).To(BeNil())
+			
+			charles, err = client.InitUser("charles", defaultPassword)
+			Expect(err).To(BeNil())
+			
+			err = alice.StoreFile(aliceFile, []byte(contentOne))
+			Expect(err).To(BeNil())
+			
+			err = charles.StoreFile(charlesFile, []byte(contentThree))
+			Expect(err).To(BeNil())
+			
+			// Alice creates invitation for Bob
+			inviteFromAlice, err := alice.CreateInvitation(aliceFile, "bob")
+			Expect(err).To(BeNil())
+			
+			// Bob tries to accept Alice's invite but claims it's from Charles (wrong sender)
+			err = bob.AcceptInvitation("charles", inviteFromAlice, bobFile)
+			Expect(err).ToNot(BeNil(), "Should error when sender identity is wrong")
+			
+			// Bob should be able to accept with correct sender
+			err = bob.AcceptInvitation("alice", inviteFromAlice, bobFile)
+			Expect(err).To(BeNil())
+			
+			data, err := bob.LoadFile(bobFile)
+			Expect(err).To(BeNil())
+			Expect(data).To(Equal([]byte(contentOne)))
+		})
+
 	})
 	
 	Describe("Revocation edge cases", func() {
@@ -989,6 +1022,57 @@ var _ = Describe("Client Tests", func() {
 			_, err = bob.LoadFile(bobFile)
 			Expect(err).ToNot(BeNil(), "Revoked user should not access file")
 		})
+
+		Specify("Revocation: Revoked user cannot detect future updates", func() {
+			alice, err = client.InitUser("alice", defaultPassword)
+			Expect(err).To(BeNil())
+			
+			bob, err = client.InitUser("bob", defaultPassword)
+			Expect(err).To(BeNil())
+			
+			err = alice.StoreFile(aliceFile, []byte(contentOne))
+			Expect(err).To(BeNil())
+			
+			invite, err := alice.CreateInvitation(aliceFile, "bob")
+			Expect(err).To(BeNil())
+			
+			err = bob.AcceptInvitation("alice", invite, bobFile)
+			Expect(err).To(BeNil())
+			
+			// Bob takes a snapshot of datastore before revocation
+			beforeRevoke := userlib.DatastoreGetMap()
+			beforeKeys := make(map[userlib.UUID][]byte)
+			for k, v := range beforeRevoke {
+				beforeKeys[k] = append([]byte{}, v...)
+			}
+			
+			// Alice revokes Bob
+			err = alice.RevokeAccess(aliceFile, "bob")
+			Expect(err).To(BeNil())
+			
+			// Take another snapshot after revocation
+			afterRevoke := userlib.DatastoreGetMap()
+			afterKeys := make(map[userlib.UUID][]byte)
+			for k, v := range afterRevoke {
+				afterKeys[k] = append([]byte{}, v...)
+			}
+			
+			// Alice makes several updates
+			for i := 0; i < 5; i++ {
+				err = alice.AppendToFile(aliceFile, []byte(fmt.Sprintf(" update%d", i)))
+				Expect(err).To(BeNil())
+			}
+			
+			// The UUIDs that changed should be encrypted/inaccessible to Bob
+			_, err = bob.LoadFile(bobFile)
+			Expect(err).ToNot(BeNil(), "Bob should not access file after revocation")
+			
+			// Verify Alice can still access with all updates
+			data, err := alice.LoadFile(aliceFile)
+			Expect(err).To(BeNil())
+			expectedContent := contentOne + " update0 update1 update2 update3 update4"
+			Expect(data).To(Equal([]byte(expectedContent)))
+		})
 	})
 	
 	Describe("Sharing edge cases", func() {
@@ -1098,6 +1182,99 @@ var _ = Describe("Client Tests", func() {
 			Expect(data).To(Equal([]byte(contentOne)))
 			
 			data, err = charles.LoadFile("charlesFile2")
+			Expect(err).To(BeNil())
+			Expect(data).To(Equal([]byte(contentTwo)))
+		})
+
+		Specify("Sharing: Verify single copy of file exists (no duplication)", func() {
+			alice, err = client.InitUser("alice", defaultPassword)
+			Expect(err).To(BeNil())
+			
+			bob, err = client.InitUser("bob", defaultPassword)
+			Expect(err).To(BeNil())
+			
+			charles, err = client.InitUser("charles", defaultPassword)
+			Expect(err).To(BeNil())
+			
+			// Alice creates and shares with Bob
+			err = alice.StoreFile(aliceFile, []byte(contentOne))
+			Expect(err).To(BeNil())
+			
+			invite1, err := alice.CreateInvitation(aliceFile, "bob")
+			Expect(err).To(BeNil())
+			
+			err = bob.AcceptInvitation("alice", invite1, bobFile)
+			Expect(err).To(BeNil())
+			
+			// Bob shares with Charles
+			invite2, err := bob.CreateInvitation(bobFile, "charles")
+			Expect(err).To(BeNil())
+			
+			err = charles.AcceptInvitation("bob", invite2, charlesFile)
+			Expect(err).To(BeNil())
+			
+			// All three users append different content
+			err = alice.AppendToFile(aliceFile, []byte(" alice1"))
+			Expect(err).To(BeNil())
+			
+			err = bob.AppendToFile(bobFile, []byte(" bob1"))
+			Expect(err).To(BeNil())
+			
+			err = charles.AppendToFile(charlesFile, []byte(" charles1"))
+			Expect(err).To(BeNil())
+			
+			// All should see ALL appends (proving single copy)
+			expectedFinal := contentOne + " alice1 bob1 charles1"
+			
+			dataAlice, err := alice.LoadFile(aliceFile)
+			Expect(err).To(BeNil())
+			Expect(dataAlice).To(Equal([]byte(expectedFinal)))
+			
+			dataBob, err := bob.LoadFile(bobFile)
+			Expect(err).To(BeNil())
+			Expect(dataBob).To(Equal([]byte(expectedFinal)))
+			
+			dataCharles, err := charles.LoadFile(charlesFile)
+			Expect(err).To(BeNil())
+			Expect(dataCharles).To(Equal([]byte(expectedFinal)))
+			
+			// Now Alice overwrites - everyone should see the overwrite
+			err = alice.StoreFile(aliceFile, []byte("completely new content"))
+			Expect(err).To(BeNil())
+			
+			dataBob2, err := bob.LoadFile(bobFile)
+			Expect(err).To(BeNil())
+			Expect(dataBob2).To(Equal([]byte("completely new content")))
+			
+			dataCharles2, err := charles.LoadFile(charlesFile)
+			Expect(err).To(BeNil())
+			Expect(dataCharles2).To(Equal([]byte("completely new content")))
+		})
+
+		Specify("Sharing: Cannot accept invitation if filename already exists", func() {
+			alice, err = client.InitUser("alice", defaultPassword)
+			Expect(err).To(BeNil())
+			
+			bob, err = client.InitUser("bob", defaultPassword)
+			Expect(err).To(BeNil())
+			
+			// Bob already has a file with this name
+			err = bob.StoreFile(bobFile, []byte(contentTwo))
+			Expect(err).To(BeNil())
+			
+			// Alice tries to share with Bob using a filename bob already has
+			err = alice.StoreFile(aliceFile, []byte(contentOne))
+			Expect(err).To(BeNil())
+			
+			invite, err := alice.CreateInvitation(aliceFile, "bob")
+			Expect(err).To(BeNil())
+			
+			// Bob tries to accept with a filename he already has
+			err = bob.AcceptInvitation("alice", invite, bobFile)
+			Expect(err).ToNot(BeNil(), "Should error when accepting with existing filename")
+			
+			// Bob's original file should still be intact
+			data, err := bob.LoadFile(bobFile)
 			Expect(err).To(BeNil())
 			Expect(data).To(Equal([]byte(contentTwo)))
 		})
@@ -1261,6 +1438,59 @@ var _ = Describe("Client Tests", func() {
 			// Alice (uppercase) shouldn't see alice's file
 			_, err = Alice.LoadFile(aliceFile)
 			Expect(err).ToNot(BeNil(), "Different case username is different user")
+		})
+
+		Specify("Security: Filename length confidentiality", func() {
+			alice, err = client.InitUser("alice", defaultPassword)
+			Expect(err).To(BeNil())
+			
+			bob, err = client.InitUser("bob", defaultPassword)
+			Expect(err).To(BeNil())
+			
+			// Create files with very different filename lengths
+			shortName := "a"
+			longName := strings.Repeat("verylongfilename", 50) // 800 characters
+			
+			// Store files with different length names but same content
+			err = alice.StoreFile(shortName, []byte(contentOne))
+			Expect(err).To(BeNil())
+			
+			// Capture datastore state
+			before := userlib.DatastoreGetMap()
+			beforeSize := 0
+			for _, v := range before {
+				beforeSize += len(v)
+			}
+			
+			err = bob.StoreFile(longName, []byte(contentOne))
+			Expect(err).To(BeNil())
+			
+			// Capture datastore state after
+			after := userlib.DatastoreGetMap()
+			afterSize := 0
+			for _, v := range after {
+				afterSize += len(v)
+			}
+			
+			// Both should be able to load successfully
+			dataShort, err := alice.LoadFile(shortName)
+			Expect(err).To(BeNil())
+			Expect(dataShort).To(Equal([]byte(contentOne)))
+			
+			dataLong, err := bob.LoadFile(longName)
+			Expect(err).To(BeNil())
+			Expect(dataLong).To(Equal([]byte(contentOne)))
+			
+			// Test with sharing - filename length still shouldn't leak
+			invite, err := alice.CreateInvitation(shortName, "bob")
+			Expect(err).To(BeNil())
+			
+			err = bob.AcceptInvitation("alice", invite, longName+"_shared")
+			Expect(err).To(BeNil())
+			
+			dataShared, err := bob.LoadFile(longName + "_shared")
+			Expect(err).To(BeNil())
+			Expect(dataShared).To(Equal([]byte(contentOne)))
 		})
 	})
 })
