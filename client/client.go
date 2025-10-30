@@ -76,9 +76,14 @@ type FileContent struct {
 	TailUUID uuid.UUID
 }
 
+// FIXED: Separated content from metadata for efficient append
 type FileChunkContent struct {
-	EncryptedContent []byte
-	NextUUID         *uuid.UUID // nil if last chunk
+	EncryptedContent []byte // The actual encrypted data
+}
+
+type FileChunkMetadata struct {
+	ContentUUID uuid.UUID  // Points to FileChunkContent
+	NextUUID    *uuid.UUID // Points to next chunk's metadata (nil if last)
 }
 
 // Access control tree
@@ -609,8 +614,8 @@ func (userdata *User) createNewFile(filename string, content []byte, userStruct 
 	fileEncKey, fileMACKey := deriveFileKeys()
 	
 	// Split content into chunks and create linked list
-	var headUUID, tailUUID uuid.UUID
-	var prevUUID *uuid.UUID = nil
+	var headMetaUUID, tailMetaUUID uuid.UUID
+	var prevMetaUUID *uuid.UUID = nil
 	
 	// Split content into CHUNK_SIZE pieces
 	for i := 0; i < len(content); i += CHUNK_SIZE {
@@ -620,81 +625,105 @@ func (userdata *User) createNewFile(filename string, content []byte, userStruct 
 		}
 		chunkContent := content[i:end]
 		
-		chunkUUID := uuid.New()
-		if i == 0 {
-			headUUID = chunkUUID
-		}
-		tailUUID = chunkUUID
+		// Create UUIDs for content and metadata
+		contentUUID := uuid.New()
+		metaUUID := uuid.New()
 		
-		// Encrypt chunk content
+		if i == 0 {
+			headMetaUUID = metaUUID
+		}
+		tailMetaUUID = metaUUID
+		
+		// Encrypt and store chunk content
 		encryptedContent, err := encryptThenMAC(chunkContent, fileEncKey, fileMACKey)
 		if err != nil {
 			return err
 		}
 		
-		chunk := &FileChunkContent{
+		chunkContentStruct := &FileChunkContent{
 			EncryptedContent: encryptedContent,
-			NextUUID:         nil,
 		}
 		
-		// Store chunk
-		chunkBytes, err := json.Marshal(chunk)
+		chunkContentBytes, err := json.Marshal(chunkContentStruct)
 		if err != nil {
 			return err
 		}
-		userlib.DatastoreSet(chunkUUID, chunkBytes)
+		userlib.DatastoreSet(contentUUID, chunkContentBytes)
 		
-		// Update previous chunk's NextUUID
-		if prevUUID != nil {
-			prevChunkBytes, ok := userlib.DatastoreGet(*prevUUID)
-			if !ok {
-				return errors.New("previous chunk not found")
-			}
-			
-			var prevChunk FileChunkContent
-			err = json.Unmarshal(prevChunkBytes, &prevChunk)
-			if err != nil {
-				return err
-			}
-			
-			prevChunk.NextUUID = &chunkUUID
-			prevChunkBytes, err = json.Marshal(prevChunk)
-			if err != nil {
-				return err
-			}
-			userlib.DatastoreSet(*prevUUID, prevChunkBytes)
+		// Create and store chunk metadata
+		chunkMeta := &FileChunkMetadata{
+			ContentUUID: contentUUID,
+			NextUUID:    nil,
 		}
 		
-		prevUUID = &chunkUUID
+		chunkMetaBytes, err := json.Marshal(chunkMeta)
+		if err != nil {
+			return err
+		}
+		userlib.DatastoreSet(metaUUID, chunkMetaBytes)
+		
+		// Update previous chunk's NextUUID
+		if prevMetaUUID != nil {
+			prevMetaBytes, ok := userlib.DatastoreGet(*prevMetaUUID)
+			if !ok {
+				return errors.New("previous chunk metadata not found")
+			}
+			
+			var prevMeta FileChunkMetadata
+			err = json.Unmarshal(prevMetaBytes, &prevMeta)
+			if err != nil {
+				return err
+			}
+			
+			prevMeta.NextUUID = &metaUUID
+			prevMetaBytes, err = json.Marshal(prevMeta)
+			if err != nil {
+				return err
+			}
+			userlib.DatastoreSet(*prevMetaUUID, prevMetaBytes)
+		}
+		
+		prevMetaUUID = &metaUUID
 	}
 	
 	// Handle empty file case
 	if len(content) == 0 {
-		chunkUUID := uuid.New()
-		headUUID = chunkUUID
-		tailUUID = chunkUUID
+		contentUUID := uuid.New()
+		metaUUID := uuid.New()
+		headMetaUUID = metaUUID
+		tailMetaUUID = metaUUID
 		
 		encryptedContent, err := encryptThenMAC([]byte{}, fileEncKey, fileMACKey)
 		if err != nil {
 			return err
 		}
 		
-		chunk := &FileChunkContent{
+		chunkContentStruct := &FileChunkContent{
 			EncryptedContent: encryptedContent,
-			NextUUID:         nil,
 		}
 		
-		chunkBytes, err := json.Marshal(chunk)
+		chunkContentBytes, err := json.Marshal(chunkContentStruct)
 		if err != nil {
 			return err
 		}
-		userlib.DatastoreSet(chunkUUID, chunkBytes)
+		userlib.DatastoreSet(contentUUID, chunkContentBytes)
+		
+		chunkMeta := &FileChunkMetadata{
+			ContentUUID: contentUUID,
+			NextUUID:    nil,
+		}
+		
+		chunkMetaBytes, err := json.Marshal(chunkMeta)
+		if err != nil {
+			return err
+		}
+		userlib.DatastoreSet(metaUUID, chunkMetaBytes)
 	}
 	
 	// Create FileContent
 	fileContent := &FileContent{
-		HeadUUID: headUUID,
-		TailUUID: tailUUID,
+		HeadUUID: headMetaUUID,
+		TailUUID: tailMetaUUID,
 	}
 	
 	// Store FileContent
@@ -867,12 +896,9 @@ func (userdata *User) overwriteFile(filename string, content []byte, userStruct 
 		return err
 	}
 	
-	// Delete old chunks (optional - can leave as garbage)
-	// For now, we'll just create new chunks and update pointers
-	
 	// Split content into chunks and create linked list
-	var headUUID, tailUUID uuid.UUID
-	var prevUUID *uuid.UUID = nil
+	var headMetaUUID, tailMetaUUID uuid.UUID
+	var prevMetaUUID *uuid.UUID = nil
 	
 	// Split content into CHUNK_SIZE pieces
 	for i := 0; i < len(content); i += CHUNK_SIZE {
@@ -882,80 +908,104 @@ func (userdata *User) overwriteFile(filename string, content []byte, userStruct 
 		}
 		chunkContent := content[i:end]
 		
-		chunkUUID := uuid.New()
-		if i == 0 {
-			headUUID = chunkUUID
-		}
-		tailUUID = chunkUUID
+		// Create UUIDs for content and metadata
+		contentUUID := uuid.New()
+		metaUUID := uuid.New()
 		
-		// Encrypt chunk content
+		if i == 0 {
+			headMetaUUID = metaUUID
+		}
+		tailMetaUUID = metaUUID
+		
+		// Encrypt and store chunk content
 		encryptedContent, err := encryptThenMAC(chunkContent, fileEncKey, fileMACKey)
 		if err != nil {
 			return err
 		}
 		
-		chunk := &FileChunkContent{
+		chunkContentStruct := &FileChunkContent{
 			EncryptedContent: encryptedContent,
-			NextUUID:         nil,
 		}
 		
-		// Store chunk
-		chunkBytes, err := json.Marshal(chunk)
+		chunkContentBytes, err := json.Marshal(chunkContentStruct)
 		if err != nil {
 			return err
 		}
-		userlib.DatastoreSet(chunkUUID, chunkBytes)
+		userlib.DatastoreSet(contentUUID, chunkContentBytes)
 		
-		// Update previous chunk's NextUUID
-		if prevUUID != nil {
-			prevChunkBytes, ok := userlib.DatastoreGet(*prevUUID)
-			if !ok {
-				return errors.New("previous chunk not found")
-			}
-			
-			var prevChunk FileChunkContent
-			err = json.Unmarshal(prevChunkBytes, &prevChunk)
-			if err != nil {
-				return err
-			}
-			
-			prevChunk.NextUUID = &chunkUUID
-			prevChunkBytes, err = json.Marshal(prevChunk)
-			if err != nil {
-				return err
-			}
-			userlib.DatastoreSet(*prevUUID, prevChunkBytes)
+		// Create and store chunk metadata
+		chunkMeta := &FileChunkMetadata{
+			ContentUUID: contentUUID,
+			NextUUID:    nil,
 		}
 		
-		prevUUID = &chunkUUID
+		chunkMetaBytes, err := json.Marshal(chunkMeta)
+		if err != nil {
+			return err
+		}
+		userlib.DatastoreSet(metaUUID, chunkMetaBytes)
+		
+		// Update previous chunk's NextUUID
+		if prevMetaUUID != nil {
+			prevMetaBytes, ok := userlib.DatastoreGet(*prevMetaUUID)
+			if !ok {
+				return errors.New("previous chunk metadata not found")
+			}
+			
+			var prevMeta FileChunkMetadata
+			err = json.Unmarshal(prevMetaBytes, &prevMeta)
+			if err != nil {
+				return err
+			}
+			
+			prevMeta.NextUUID = &metaUUID
+			prevMetaBytes, err = json.Marshal(prevMeta)
+			if err != nil {
+				return err
+			}
+			userlib.DatastoreSet(*prevMetaUUID, prevMetaBytes)
+		}
+		
+		prevMetaUUID = &metaUUID
 	}
 	
 	// Handle empty file case
 	if len(content) == 0 {
-		chunkUUID := uuid.New()
-		headUUID = chunkUUID
-		tailUUID = chunkUUID
+		contentUUID := uuid.New()
+		metaUUID := uuid.New()
+		headMetaUUID = metaUUID
+		tailMetaUUID = metaUUID
 		
 		encryptedContent, err := encryptThenMAC([]byte{}, fileEncKey, fileMACKey)
 		if err != nil {
 			return err
 		}
 		
-		chunk := &FileChunkContent{
+		chunkContentStruct := &FileChunkContent{
 			EncryptedContent: encryptedContent,
-			NextUUID:         nil,
 		}
 		
-		chunkBytes, err := json.Marshal(chunk)
+		chunkContentBytes, err := json.Marshal(chunkContentStruct)
 		if err != nil {
 			return err
 		}
-		userlib.DatastoreSet(chunkUUID, chunkBytes)
+		userlib.DatastoreSet(contentUUID, chunkContentBytes)
+		
+		chunkMeta := &FileChunkMetadata{
+			ContentUUID: contentUUID,
+			NextUUID:    nil,
+		}
+		
+		chunkMetaBytes, err := json.Marshal(chunkMeta)
+		if err != nil {
+			return err
+		}
+		userlib.DatastoreSet(metaUUID, chunkMetaBytes)
 	}
 	
 	// Update FileContent with new head and tail
-	fileContent.HeadUUID = headUUID
-	fileContent.TailUUID = tailUUID
+	fileContent.HeadUUID = headMetaUUID
+	fileContent.TailUUID = tailMetaUUID
 	
 	// Store updated FileContent
 	fileContentBytes, err = json.Marshal(fileContent)
@@ -976,7 +1026,7 @@ func (userdata *User) overwriteFile(filename string, content []byte, userStruct 
 // ============================================================================
 
 func (userdata *User) AppendToFile(filename string, content []byte) error {
-	
+	// Early return for empty append
 	if len(content) == 0 {
 		return nil
 	}
@@ -1050,89 +1100,102 @@ func (userdata *User) AppendToFile(filename string, content []byte) error {
 		return err
 	}
 	
-	// Split appended content into chunks (for efficiency)
-	// This ensures we don't create giant chunks that slow down future appends
-		// Split content into CHUNK_SIZE pieces for efficiency
-		var firstNewChunkUUID uuid.UUID
-		var lastNewChunkUUID uuid.UUID
-		var prevChunkUUID *uuid.UUID = nil
-		
-		for i := 0; i < len(content); i += CHUNK_SIZE {
-			end := i + CHUNK_SIZE
-			if end > len(content) {
-				end = len(content)
-			}
-			chunkContent := content[i:end]
-			
-			newChunkUUID := uuid.New()
-			if i == 0 {
-				firstNewChunkUUID = newChunkUUID
-			}
-			lastNewChunkUUID = newChunkUUID
-			
-			// Encrypt chunk content
-			encryptedContent, err := encryptThenMAC(chunkContent, fileEncKey, fileMACKey)
-			if err != nil {
-				return err
-			}
-			
-			newChunk := &FileChunkContent{
-				EncryptedContent: encryptedContent,
-				NextUUID:         nil,
-			}
-			
-			// Store new chunk
-			newChunkBytes, err := json.Marshal(newChunk)
-			if err != nil {
-				return err
-			}
-			userlib.DatastoreSet(newChunkUUID, newChunkBytes)
-			
-			// Link previous chunk to this one
-			if prevChunkUUID != nil {
-				prevChunkBytes, ok := userlib.DatastoreGet(*prevChunkUUID)
-				if !ok {
-					return errors.New("previous new chunk not found")
-				}
-				
-				var prevChunk FileChunkContent
-				err = json.Unmarshal(prevChunkBytes, &prevChunk)
-				if err != nil {
-					return err
-				}
-				
-				prevChunk.NextUUID = &newChunkUUID
-				prevChunkBytes, err = json.Marshal(prevChunk)
-				if err != nil {
-					return err
-				}
-				userlib.DatastoreSet(*prevChunkUUID, prevChunkBytes)
-			}
-			
-			prevChunkUUID = &newChunkUUID
+	// CRITICAL FIX: Only load tail METADATA, not content!
+	// Split content into new chunks
+	var firstNewMetaUUID uuid.UUID
+	var lastNewMetaUUID uuid.UUID
+	var prevMetaUUID *uuid.UUID = nil
+	
+	for i := 0; i < len(content); i += CHUNK_SIZE {
+		end := i + CHUNK_SIZE
+		if end > len(content) {
+			end = len(content)
 		}
+		chunkContent := content[i:end]
 		
-		// Update old tail chunk to point to first new chunk
-		oldTailBytes, ok := userlib.DatastoreGet(fileContent.TailUUID)
-		if !ok {
-			return errors.New("tail chunk not found")
+		// Create UUIDs for content and metadata
+		contentUUID := uuid.New()
+		metaUUID := uuid.New()
+		
+		if i == 0 {
+			firstNewMetaUUID = metaUUID
 		}
+		lastNewMetaUUID = metaUUID
 		
-		var oldTailChunk FileChunkContent
-		err = json.Unmarshal(oldTailBytes, &oldTailChunk)
+		// Encrypt and store chunk content
+		encryptedContent, err := encryptThenMAC(chunkContent, fileEncKey, fileMACKey)
 		if err != nil {
 			return err
 		}
 		
-		oldTailChunk.NextUUID = &firstNewChunkUUID
-		oldTailChunkBytes, err := json.Marshal(oldTailChunk)
+		chunkContentStruct := &FileChunkContent{
+			EncryptedContent: encryptedContent,
+		}
+		
+		chunkContentBytes, err := json.Marshal(chunkContentStruct)
 		if err != nil {
 			return err
 		}
-		userlib.DatastoreSet(fileContent.TailUUID, oldTailChunkBytes)
+		userlib.DatastoreSet(contentUUID, chunkContentBytes)
 		
-		// Update FileContent tail pointer to last new chunk
-		fileContent.TailUUID = lastNewChunkUUID
+		// Create and store chunk metadata
+		chunkMeta := &FileChunkMetadata{
+			ContentUUID: contentUUID,
+			NextUUID:    nil,
+		}
+		
+		chunkMetaBytes, err := json.Marshal(chunkMeta)
+		if err != nil {
+			return err
+		}
+		userlib.DatastoreSet(metaUUID, chunkMetaBytes)
+		
+		// Link previous chunk metadata to this one
+		if prevMetaUUID != nil {
+			prevMetaBytes, ok := userlib.DatastoreGet(*prevMetaUUID)
+			if !ok {
+				return errors.New("previous chunk metadata not found")
+			}
+			
+			var prevMeta FileChunkMetadata
+			err = json.Unmarshal(prevMetaBytes, &prevMeta)
+			if err != nil {
+				return err
+			}
+			
+			prevMeta.NextUUID = &metaUUID
+			prevMetaBytes, err = json.Marshal(prevMeta)
+			if err != nil {
+				return err
+			}
+			userlib.DatastoreSet(*prevMetaUUID, prevMetaBytes)
+		}
+		
+		prevMetaUUID = &metaUUID
+	}
+	
+	// Update old tail metadata to point to first new chunk
+	// ONLY loads metadata (~50 bytes), NOT the content!
+	oldTailMetaBytes, ok := userlib.DatastoreGet(fileContent.TailUUID)
+	if !ok {
+		return errors.New("tail chunk metadata not found")
+	}
+	
+	var oldTailMeta FileChunkMetadata
+	err = json.Unmarshal(oldTailMetaBytes, &oldTailMeta)
+	if err != nil {
+		return err
+	}
+	
+	oldTailMeta.NextUUID = &firstNewMetaUUID
+	oldTailMetaBytes, err = json.Marshal(oldTailMeta)
+	if err != nil {
+		return err
+	}
+	userlib.DatastoreSet(fileContent.TailUUID, oldTailMetaBytes)
+	
+	// Update FileContent tail pointer to last new chunk
+	fileContent.TailUUID = lastNewMetaUUID
 	
 	// Store updated FileContent
 	fileContentBytes, err = json.Marshal(fileContent)
@@ -1230,23 +1293,35 @@ func (userdata *User) LoadFile(filename string) (content []byte, err error) {
 	
 	// Traverse linked list of chunks and concatenate content
 	var fullContent []byte
-	currentUUID := fileContent.HeadUUID
+	currentMetaUUID := fileContent.HeadUUID
 	
 	for {
-		// Get current chunk
-		chunkBytes, ok := userlib.DatastoreGet(currentUUID)
+		// Get current chunk metadata
+		metaBytes, ok := userlib.DatastoreGet(currentMetaUUID)
 		if !ok {
-			return nil, errors.New("chunk not found")
+			return nil, errors.New("chunk metadata not found")
 		}
 		
-		var chunk FileChunkContent
-		err = json.Unmarshal(chunkBytes, &chunk)
+		var chunkMeta FileChunkMetadata
+		err = json.Unmarshal(metaBytes, &chunkMeta)
 		if err != nil {
 			return nil, err
 		}
 		
-		// Decrypt chunk content (verifyMACThenDecrypt will verify integrity)
-		decryptedChunk, err := verifyMACThenDecrypt(chunk.EncryptedContent, fileEncKey, fileMACKey)
+		// Get chunk content using ContentUUID from metadata
+		contentBytes, ok := userlib.DatastoreGet(chunkMeta.ContentUUID)
+		if !ok {
+			return nil, errors.New("chunk content not found")
+		}
+		
+		var chunkContent FileChunkContent
+		err = json.Unmarshal(contentBytes, &chunkContent)
+		if err != nil {
+			return nil, err
+		}
+		
+		// Decrypt chunk content
+		decryptedChunk, err := verifyMACThenDecrypt(chunkContent.EncryptedContent, fileEncKey, fileMACKey)
 		if err != nil {
 			return nil, err
 		}
@@ -1255,10 +1330,10 @@ func (userdata *User) LoadFile(filename string) (content []byte, err error) {
 		fullContent = append(fullContent, decryptedChunk...)
 		
 		// Move to next chunk
-		if chunk.NextUUID == nil {
+		if chunkMeta.NextUUID == nil {
 			break
 		}
-		currentUUID = *chunk.NextUUID
+		currentMetaUUID = *chunkMeta.NextUUID
 	}
 	
 	return fullContent, nil
@@ -1694,22 +1769,35 @@ func (userdata *User) RevokeAccess(filename string, recipientUsername string) er
 	}
 	userlib.DatastoreSet(fileStruct.ContentUUID, encryptedFileContent)
 	
-	// 4. Re-encrypt all chunks
-	currentChunkUUID := fileContent.HeadUUID
+	// 4. Re-encrypt all chunks (both content and metadata)
+	currentMetaUUID := fileContent.HeadUUID
 	for {
-		chunkBytes, ok := userlib.DatastoreGet(currentChunkUUID)
+		// Get metadata
+		metaBytes, ok := userlib.DatastoreGet(currentMetaUUID)
 		if !ok {
 			break
 		}
 		
-		var chunk FileChunkContent
-		err = json.Unmarshal(chunkBytes, &chunk)
+		var chunkMeta FileChunkMetadata
+		err = json.Unmarshal(metaBytes, &chunkMeta)
+		if err != nil {
+			break
+		}
+		
+		// Get content
+		contentBytes, ok := userlib.DatastoreGet(chunkMeta.ContentUUID)
+		if !ok {
+			break
+		}
+		
+		var chunkContent FileChunkContent
+		err = json.Unmarshal(contentBytes, &chunkContent)
 		if err != nil {
 			break
 		}
 		
 		// Decrypt chunk content with old keys
-		decryptedChunkContent, err := verifyMACThenDecrypt(chunk.EncryptedContent, oldFileEncKey, oldFileMACKey)
+		decryptedChunkContent, err := verifyMACThenDecrypt(chunkContent.EncryptedContent, oldFileEncKey, oldFileMACKey)
 		if err != nil {
 			break
 		}
@@ -1720,20 +1808,21 @@ func (userdata *User) RevokeAccess(filename string, recipientUsername string) er
 			break
 		}
 		
-		chunk.EncryptedContent = reEncryptedContent
+		chunkContent.EncryptedContent = reEncryptedContent
 		
-		// Store re-encrypted chunk
-		chunkBytes, err = json.Marshal(chunk)
+		// Store re-encrypted content
+		contentBytes, err = json.Marshal(chunkContent)
 		if err != nil {
 			break
 		}
-		userlib.DatastoreSet(currentChunkUUID, chunkBytes)
+		userlib.DatastoreSet(chunkMeta.ContentUUID, contentBytes)
 		
-		// Move to next chunk
-		if chunk.NextUUID == nil {
+		// Metadata doesn't need re-encryption (it's not encrypted with file keys)
+		// Just move to next chunk
+		if chunkMeta.NextUUID == nil {
 			break
 		}
-		currentChunkUUID = *chunk.NextUUID
+		currentMetaUUID = *chunkMeta.NextUUID
 	}
 	
 	// 5. Re-encrypt all valid FileAccessNodes and create new InvStructs
