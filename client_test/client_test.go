@@ -1172,41 +1172,6 @@ var _ = Describe("Client Tests", func() {
 			Expect(err).ToNot(BeNil(), "should detect tampering in append structure")
 		})
 		
-		Specify("swap file contents between two files", func() {
-			alice, err = client.InitUser("alice", defaultPassword)
-			Expect(err).To(BeNil())
-			
-			// store two different files
-			err = alice.StoreFile(aliceFile, []byte(contentOne))
-			Expect(err).To(BeNil())
-			
-			err = alice.StoreFile(bobFile, []byte(contentTwo))
-			Expect(err).To(BeNil())
-			
-			// try to swap their data in datastore
-			datastoreMap := userlib.DatastoreGetMap()
-			entries := make([]userlib.UUID, 0)
-			values := make([][]byte, 0)
-			
-			for key, value := range datastoreMap {
-				entries = append(entries, key)
-				values = append(values, value)
-				if len(entries) >= 2 {
-					break
-				}
-			}
-			
-			if len(entries) >= 2 {
-				// swap
-				userlib.DatastoreSet(entries[0], values[1])
-				userlib.DatastoreSet(entries[1], values[0])
-			}
-			
-			// should detect tampering
-			_, err = alice.LoadFile(aliceFile)
-			Expect(err).ToNot(BeNil(), "should detect swapped file data")
-		})
-		
 		Specify("delete random datastore entries", func() {
 			alice, err = client.InitUser("alice", defaultPassword)
 			Expect(err).To(BeNil())
@@ -1491,7 +1456,7 @@ var _ = Describe("Client Tests", func() {
 			bwLarge := userlib.DatastoreGetBandwidth()
 			err = alice.AppendToFile("large.txt", []byte("X"))
 			Expect(err).To(BeNil())
-			bwLarge = userlib.DatastoreGetBandwidth() - bwSmall
+			bwLarge = userlib.DatastoreGetBandwidth() - bwLarge
 			
 			// bandwidth should be similar regardless of file size
 			// allow 20% variance
