@@ -38,22 +38,22 @@ import (
 )
 
 // ============================================================================
-// CONSTANTS
+// Constants
 // ============================================================================
 
 const CHUNK_SIZE = 4096 // 4KB chunks for efficient append
 
 // ============================================================================
-// DATA STRUCTURES
+// Data Structs
 // ============================================================================
 
-// User metadata stored at deterministic UUID (plaintext)
+// user metadata stored at deterministic UUID (plaintext)
 type UserMetadata struct {
 	Salt           []byte
 	UserStructUUID uuid.UUID
 }
 
-// User's encrypted file namespace
+// user's encrypted file namespace
 type UserStruct struct {
 	Files      map[string]FilePointers // hashed filename -> pointers
 	PrivEncKey userlib.PKEDecKey       // RSA private key (encrypted in datastore)
@@ -65,7 +65,7 @@ type FilePointers struct {
 	InvStructUUID  uuid.UUID
 }
 
-// File structure
+// file structure
 type FileStruct struct {
 	ContentUUID uuid.UUID
 	AccessUUID  uuid.UUID
@@ -76,7 +76,6 @@ type FileContent struct {
 	TailUUID uuid.UUID
 }
 
-// FIXED: Separated content from metadata for efficient append
 type FileChunkContent struct {
 	EncryptedContent []byte // The actual encrypted data
 }
@@ -86,19 +85,19 @@ type FileChunkMetadata struct {
 	NextUUID    *uuid.UUID // Points to next chunk's metadata (nil if last)
 }
 
-// Access control tree
+// access control tree
 type FileAccess struct {
 	OwnerNodeUUID uuid.UUID
 }
 
 type FileAccessNode struct {
-	Username       string     // Plaintext username (encrypted with file keys anyway)
+	Username       string     // plaintext username (encrypted with file keys anyway)
 	HashedUsername []byte
 	InvStructUUID  uuid.UUID
 	ShareeUUIDs    []uuid.UUID // list of child nodes
 }
 
-// Invitation structure
+// invitation structure
 type InvStruct struct {
 	FileStructUUID uuid.UUID
 	FileEncKey     []byte
@@ -107,14 +106,14 @@ type InvStruct struct {
 	SharerUsername string // Username of person who created this invitation
 }
 
-// Wrapper for hybrid encryption
+// wrapper for hybrid encryption
 type HybridInvStruct struct {
 	RSAEncryptedSymKey    []byte
 	SymEncryptedInvStruct []byte
 	Signature             []byte // Digital signature by sender to prove authenticity
 }
 
-// User struct for holding session data
+// user struct for holding session data
 type User struct {
 	Username   string
 	Password   string
@@ -123,7 +122,7 @@ type User struct {
 }
 
 // ============================================================================
-// HELPER FUNCTIONS - UUID GENERATION
+// UUID Generation
 // ============================================================================
 
 func deterministicUUID(input string) uuid.UUID {
@@ -158,14 +157,14 @@ func hashFilename(filename string) string {
 }
 
 // ============================================================================
-// HELPER FUNCTIONS - KEY DERIVATION
+// Key derivation
 // ============================================================================
 
 func deriveUserKeys(password string, salt []byte) (encKey, macKey []byte, err error) {
-	// Generate master key using Argon2
+	// generate master key using Argon2
 	masterKey := userlib.Argon2Key([]byte(password), salt, 16)
 	
-	// Derive encryption and MAC keys using HKDF
+	// derive encryption and MAC keys using HKDF, keeps everything client side
 	encKey, err = userlib.HashKDF(masterKey, []byte("encryption"))
 	if err != nil {
 		return nil, nil, err
@@ -182,43 +181,43 @@ func deriveUserKeys(password string, salt []byte) (encKey, macKey []byte, err er
 }
 
 func deriveFileKeys() (encKey, macKey []byte) {
-	// Generate random keys for file encryption and MAC
+	// generate random keys for file encryption and MAC
 	encKey = userlib.RandomBytes(16)
 	macKey = userlib.RandomBytes(16)
 	return encKey, macKey
 }
 
 // ============================================================================
-// HELPER FUNCTIONS - ENCRYPTION/DECRYPTION
+// Encryption/decryption
 // ============================================================================
 
 func encryptThenMAC(data, encKey, macKey []byte) ([]byte, error) {
-	// Encrypt data
+	// encrypt data
 	iv := userlib.RandomBytes(16)
 	encrypted := userlib.SymEnc(encKey, iv, data)
 	
-	// MAC the encrypted data
+	// MAC next
 	mac, err := userlib.HMACEval(macKey, encrypted)
 	if err != nil {
 		return nil, err
 	}
 	
-	// Concatenate: MAC || encrypted data
+	// concatenate: MAC || encrypted data
 	result := append(mac, encrypted...)
 	return result, nil
 }
 
 func verifyMACThenDecrypt(data, encKey, macKey []byte) ([]byte, error) {
-	// Check minimum length
+	// edge case: check for minimum length
 	if len(data) < 64 {
 		return nil, errors.New("data too short")
 	}
 	
-	// Split MAC and encrypted data
+	// split MAC and encrypted data
 	mac := data[:64]
 	encrypted := data[64:]
 	
-	// Verify MAC
+	// verify MAC
 	expectedMAC, err := userlib.HMACEval(macKey, encrypted)
 	if err != nil {
 		return nil, err
@@ -228,20 +227,20 @@ func verifyMACThenDecrypt(data, encKey, macKey []byte) ([]byte, error) {
 		return nil, errors.New("MAC verification failed")
 	}
 	
-	// Decrypt data
+	// decrypt data
 	decrypted := userlib.SymDec(encKey, encrypted)
 	return decrypted, nil
 }
 
 // ============================================================================
-// HELPER FUNCTIONS - HYBRID ENCRYPTION FOR INVSTRUCT
+// Hybrid encryption for InvStruct
 // ============================================================================
 
 func hybridEncrypt(invStruct *InvStruct, recipientPubKey userlib.PKEEncKey, senderSignKey userlib.DSSignKey) (*HybridInvStruct, error) {
-	// 1. Generate random symmetric key
+	// 1. generate random symmetric key
 	symKey := userlib.RandomBytes(16)
 	
-	// 2. Derive enc/mac keys from symmetric key
+	// 2. derive enc/mac keys from symmetric key
 	encKey, err := userlib.HashKDF(symKey, []byte("inv-enc"))
 	if err != nil {
 		return nil, err
@@ -254,7 +253,7 @@ func hybridEncrypt(invStruct *InvStruct, recipientPubKey userlib.PKEEncKey, send
 	}
 	macKey = macKey[:16]
 	
-	// 3. Marshal and encrypt InvStruct
+	// 3. marshal and encrypt InvStruct
 	invBytes, err := json.Marshal(invStruct)
 	if err != nil {
 		return nil, err
@@ -271,8 +270,8 @@ func hybridEncrypt(invStruct *InvStruct, recipientPubKey userlib.PKEEncKey, send
 		return nil, err
 	}
 	
-	// 5. Sign the encrypted invitation to prove sender identity
-	// Sign over both the RSA encrypted key and the symmetric encrypted invitation
+	// 5. sign the encrypted invitation to prove sender identity
+	// sign over both the RSA encrypted key and the symmetric encrypted invitation
 	toSign := append(rsaEncryptedKey, encryptedInv...)
 	signature, err := userlib.DSSign(senderSignKey, toSign)
 	if err != nil {
@@ -287,7 +286,7 @@ func hybridEncrypt(invStruct *InvStruct, recipientPubKey userlib.PKEEncKey, send
 }
 
 func hybridDecrypt(hybridInv *HybridInvStruct, recipientPrivKey userlib.PKEDecKey, senderVerifyKey userlib.DSVerifyKey) (*InvStruct, error) {
-	// 1. Verify signature first to authenticate sender
+	// 1. verify signature first to authenticate sender
 	toVerify := append(hybridInv.RSAEncryptedSymKey, hybridInv.SymEncryptedInvStruct...)
 	err := userlib.DSVerify(senderVerifyKey, toVerify, hybridInv.Signature)
 	if err != nil {
@@ -300,7 +299,7 @@ func hybridDecrypt(hybridInv *HybridInvStruct, recipientPrivKey userlib.PKEDecKe
 		return nil, err
 	}
 	
-	// 3. Derive enc/mac keys from symmetric key
+	// 3. derive enc/mac keys from symmetric key
 	encKey, err := userlib.HashKDF(symKey, []byte("inv-enc"))
 	if err != nil {
 		return nil, err
@@ -313,13 +312,13 @@ func hybridDecrypt(hybridInv *HybridInvStruct, recipientPrivKey userlib.PKEDecKe
 	}
 	macKey = macKey[:16]
 	
-	// 4. Verify MAC and decrypt InvStruct
+	// 4. verify MAC and decrypt InvStruct
 	invBytes, err := verifyMACThenDecrypt(hybridInv.SymEncryptedInvStruct, encKey, macKey)
 	if err != nil {
 		return nil, err
 	}
 	
-	// 5. Unmarshal InvStruct
+	// 5. unmarshal InvStruct
 	var invStruct InvStruct
 	err = json.Unmarshal(invBytes, &invStruct)
 	if err != nil {
@@ -329,11 +328,9 @@ func hybridDecrypt(hybridInv *HybridInvStruct, recipientPrivKey userlib.PKEDecKe
 	return &invStruct, nil
 }
 
-// Helper function to decrypt invitation and automatically get sharer's verify key
-// Note: We decrypt first to get SharerUsername, then verify signature
-// This is secure because signature verification will fail if data is tampered
+// helper function to decrypt invitation and automatically get sharer's verify key --> decrypt and then verify signature
 func decryptInvitation(hybridInv *HybridInvStruct, recipientPrivKey userlib.PKEDecKey) (*InvStruct, error) {
-	// Decrypt to get the SharerUsername
+	// decrypt to get the SharerUsername
 	symKey, err := userlib.PKEDec(recipientPrivKey, hybridInv.RSAEncryptedSymKey)
 	if err != nil {
 		return nil, err
@@ -362,13 +359,13 @@ func decryptInvitation(hybridInv *HybridInvStruct, recipientPrivKey userlib.PKED
 		return nil, err
 	}
 	
-	// Now verify the signature using sharer's verify key
+	// verify the signature using sharer's verify key
 	sharerVerifyKey, ok := userlib.KeystoreGet(invStruct.SharerUsername + "_verify")
 	if !ok {
 		return nil, errors.New("sharer's verify key not found")
 	}
 	
-	// Verify signature
+	// verify signature
 	toVerify := append(hybridInv.RSAEncryptedSymKey, hybridInv.SymEncryptedInvStruct...)
 	err = userlib.DSVerify(sharerVerifyKey, toVerify, hybridInv.Signature)
 	if err != nil {
@@ -379,11 +376,10 @@ func decryptInvitation(hybridInv *HybridInvStruct, recipientPrivKey userlib.PKED
 }
 
 // ============================================================================
-// HELPER FUNCTIONS - STORAGE AND RETRIEVAL
+// Storage and retrieval
 // ============================================================================
 
 func storeUserStruct(username, password string, userStruct *UserStruct) error {
-	// Get user metadata
 	userMetaUUID := getUserMetadataUUID(username)
 	userMetaBytes, ok := userlib.DatastoreGet(userMetaUUID)
 	if !ok {
@@ -396,19 +392,19 @@ func storeUserStruct(username, password string, userStruct *UserStruct) error {
 		return err
 	}
 	
-	// Derive keys
+	// derive keys locally as usual
 	encKey, macKey, err := deriveUserKeys(password, userMeta.Salt)
 	if err != nil {
 		return err
 	}
 	
-	// Marshal UserStruct (no internal MAC needed)
+	// marshal UserStruct
 	userStructBytes, err := json.Marshal(userStruct)
 	if err != nil {
 		return err
 	}
 	
-	// Encrypt and MAC - this provides integrity protection
+	// encrypt and MAC
 	encrypted, err := encryptThenMAC(userStructBytes, encKey, macKey)
 	if err != nil {
 		return err
@@ -419,7 +415,6 @@ func storeUserStruct(username, password string, userStruct *UserStruct) error {
 }
 
 func loadUserStruct(username, password string) (*UserStruct, error) {
-	// Get user metadata
 	userMetaUUID := getUserMetadataUUID(username)
 	userMetaBytes, ok := userlib.DatastoreGet(userMetaUUID)
 	if !ok {
@@ -432,32 +427,32 @@ func loadUserStruct(username, password string) (*UserStruct, error) {
 		return nil, err
 	}
 	
-	// Derive keys
+	// derive keys
 	encKey, macKey, err := deriveUserKeys(password, userMeta.Salt)
 	if err != nil {
 		return nil, err
 	}
 	
-	// Get encrypted UserStruct
+	// get encrypted UserStruct
 	encryptedData, ok := userlib.DatastoreGet(userMeta.UserStructUUID)
 	if !ok {
 		return nil, errors.New("user struct not found")
 	}
 	
-	// Verify MAC and decrypt - this verifies integrity
+	// verify MAC and decrypt
 	userStructBytes, err := verifyMACThenDecrypt(encryptedData, encKey, macKey)
 	if err != nil {
 		return nil, errors.New("authentication failed - wrong password or data tampered")
 	}
 	
-	// Unmarshal UserStruct
+	// unmarshal UserStruct
 	var userStruct UserStruct
 	err = json.Unmarshal(userStructBytes, &userStruct)
 	if err != nil {
 		return nil, err
 	}
 	
-	// Ensure Files map is not nil (JSON unmarshals empty object as nil)
+	// ensure Files map is not nil (JSON unmarshals empty object as nil)
 	if userStruct.Files == nil {
 		userStruct.Files = make(map[string]FilePointers)
 	}
@@ -466,22 +461,22 @@ func loadUserStruct(username, password string) (*UserStruct, error) {
 }
 
 // ============================================================================
-// INIT USER
+// Initialize user
 // ============================================================================
 
 func InitUser(username string, password string) (userdataptr *User, err error) {
-	// Check for empty username
+	// edge: check for empty username
 	if username == "" {
 		return nil, errors.New("username cannot be empty")
 	}
 	
-	// Check if user already exists
+	// edge: check if user already exists
 	userMetaUUID := getUserMetadataUUID(username)
 	if _, ok := userlib.DatastoreGet(userMetaUUID); ok {
 		return nil, errors.New("user already exists")
 	}
 	
-	// Generate RSA and DSA keypairs
+	// generate RSA and DSA keypairs
 	pubEncKey, privEncKey, err := userlib.PKEKeyGen()
 	if err != nil {
 		return nil, err
@@ -492,7 +487,7 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 		return nil, err
 	}
 	
-	// Store public keys in Keystore
+	// store public keys in Keystore
 	err = userlib.KeystoreSet(username+"_enc", pubEncKey)
 	if err != nil {
 		return nil, err
@@ -503,39 +498,39 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 		return nil, err
 	}
 	
-	// Generate salt
+	// generate salt
 	salt := userlib.RandomBytes(16)
 	
-	// Derive encryption and MAC keys
+	// derive encryption and MAC keys
 	encKey, macKey, err := deriveUserKeys(password, salt)
 	if err != nil {
 		return nil, err
 	}
 	
-	// Create UserStruct with private keys
+	// create UserStruct with private keys
 	userStruct := &UserStruct{
 		Files:      make(map[string]FilePointers),
 		PrivEncKey: privEncKey,
 		SignKey:    signKey,
 	}
 	
-	// Marshal UserStruct (no internal MAC)
+	// marshal UserStruct
 	userStructBytes, err := json.Marshal(userStruct)
 	if err != nil {
 		return nil, err
 	}
 	
-	// Encrypt UserStruct with external MAC
+	// encrypt UserStruct and then MAC
 	encrypted, err := encryptThenMAC(userStructBytes, encKey, macKey)
 	if err != nil {
 		return nil, err
 	}
 	
-	// Store UserStruct
+	// store UserStruct
 	userStructUUID := getUserStructUUID(username)
 	userlib.DatastoreSet(userStructUUID, encrypted)
 	
-	// Create and store UserMetadata
+	// create and store UserMetadata
 	userMeta := &UserMetadata{
 		Salt:           salt,
 		UserStructUUID: userStructUUID,
@@ -548,7 +543,7 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 	
 	userlib.DatastoreSet(userMetaUUID, userMetaBytes)
 	
-	// Create User session object
+	// create User session object
 	userdata := &User{
 		Username:   username,
 		Password:   password,
@@ -560,22 +555,22 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 }
 
 // ============================================================================
-// GET USER
+// Get user
 // ============================================================================
 
 func GetUser(username string, password string) (userdataptr *User, err error) {
-	// Check for empty username
+	// edge: check for empty username
 	if username == "" {
 		return nil, errors.New("username cannot be empty")
 	}
 	
-	// Try to load UserStruct (this verifies password)
+	// try to load UserStruct (this verifies password)
 	userStruct, err := loadUserStruct(username, password)
 	if err != nil {
 		return nil, err
 	}
 	
-	// Create User session object with private keys from UserStruct
+	// create User session object with private keys from UserStruct --> statelessness
 	userdata := &User{
 		Username:   username,
 		Password:   password,
@@ -587,11 +582,10 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 }
 
 // ============================================================================
-// STORE FILE
+// Store file
 // ============================================================================
 
 func (userdata *User) StoreFile(filename string, content []byte) (err error) {
-	// Load UserStruct
 	userStruct, err := loadUserStruct(userdata.Username, userdata.Password)
 	if err != nil {
 		return err
@@ -599,25 +593,25 @@ func (userdata *User) StoreFile(filename string, content []byte) (err error) {
 	
 	hashedFilename := hashFilename(filename)
 	
-	// Check if file already exists
+	// check if file already exists
 	if _, exists := userStruct.Files[hashedFilename]; exists {
-		// File exists - overwrite content
+		// file exists - overwrite content
 		return userdata.overwriteFile(filename, content, userStruct)
 	}
 	
-	// Create new file
+	// create new file
 	return userdata.createNewFile(filename, content, userStruct)
 }
 
 func (userdata *User) createNewFile(filename string, content []byte, userStruct *UserStruct) error {
-	// Generate file encryption and MAC keys
+	// generate file encryption and MAC keys
 	fileEncKey, fileMACKey := deriveFileKeys()
 	
-	// Split content into chunks and create linked list
+	// split content into chunks and create linked list
 	var headMetaUUID, tailMetaUUID uuid.UUID
 	var prevMetaUUID *uuid.UUID = nil
 	
-	// Split content into CHUNK_SIZE pieces
+	// split content into CHUNK_SIZE pieces
 	for i := 0; i < len(content); i += CHUNK_SIZE {
 		end := i + CHUNK_SIZE
 		if end > len(content) {
@@ -625,7 +619,7 @@ func (userdata *User) createNewFile(filename string, content []byte, userStruct 
 		}
 		chunkContent := content[i:end]
 		
-		// Create UUIDs for content and metadata
+		// create UUIDs for content and metadata
 		contentUUID := uuid.New()
 		metaUUID := uuid.New()
 		
@@ -634,7 +628,7 @@ func (userdata *User) createNewFile(filename string, content []byte, userStruct 
 		}
 		tailMetaUUID = metaUUID
 		
-		// Encrypt and store chunk content
+		// encrypt and store chunk content
 		encryptedContent, err := encryptThenMAC(chunkContent, fileEncKey, fileMACKey)
 		if err != nil {
 			return err
@@ -650,7 +644,7 @@ func (userdata *User) createNewFile(filename string, content []byte, userStruct 
 		}
 		userlib.DatastoreSet(contentUUID, chunkContentBytes)
 		
-		// Create and store chunk metadata
+		// create and store chunk metadata
 		chunkMeta := &FileChunkMetadata{
 			ContentUUID: contentUUID,
 			NextUUID:    nil,
@@ -662,7 +656,7 @@ func (userdata *User) createNewFile(filename string, content []byte, userStruct 
 		}
 		userlib.DatastoreSet(metaUUID, chunkMetaBytes)
 		
-		// Update previous chunk's NextUUID
+		// update previous chunk's NextUUID
 		if prevMetaUUID != nil {
 			prevMetaBytes, ok := userlib.DatastoreGet(*prevMetaUUID)
 			if !ok {
@@ -686,7 +680,7 @@ func (userdata *User) createNewFile(filename string, content []byte, userStruct 
 		prevMetaUUID = &metaUUID
 	}
 	
-	// Handle empty file case
+	// edge: empty file --> still make a new file with no content
 	if len(content) == 0 {
 		contentUUID := uuid.New()
 		metaUUID := uuid.New()
@@ -720,13 +714,13 @@ func (userdata *User) createNewFile(filename string, content []byte, userStruct 
 		userlib.DatastoreSet(metaUUID, chunkMetaBytes)
 	}
 	
-	// Create FileContent
+	// create FileContent
 	fileContent := &FileContent{
 		HeadUUID: headMetaUUID,
 		TailUUID: tailMetaUUID,
 	}
 	
-	// Store FileContent
+	// store FileContent
 	fileContentUUID := uuid.New()
 	fileContentBytes, err := json.Marshal(fileContent)
 	if err != nil {
@@ -738,7 +732,7 @@ func (userdata *User) createNewFile(filename string, content []byte, userStruct 
 	}
 	userlib.DatastoreSet(fileContentUUID, encryptedFileContent)
 	
-	// Create FileAccessNode for owner
+	// create FileAccessNode for owner
 	fileStructUUID := getFileStructUUID(userdata.Username, filename)
 	fileAccessNodeUUID := getFileAccessNodeUUID(userdata.Username, fileStructUUID)
 	invStructUUID := getInvStructUUID(userdata.Username, fileStructUUID)
@@ -762,7 +756,7 @@ func (userdata *User) createNewFile(filename string, content []byte, userStruct 
 	}
 	userlib.DatastoreSet(fileAccessNodeUUID, encryptedNode)
 	
-	// Create FileAccess
+	// create FileAccess
 	fileAccess := &FileAccess{
 		OwnerNodeUUID: fileAccessNodeUUID,
 	}
@@ -778,7 +772,7 @@ func (userdata *User) createNewFile(filename string, content []byte, userStruct 
 	}
 	userlib.DatastoreSet(fileAccessUUID, encryptedAccess)
 	
-	// Create FileStruct
+	// create FileStruct
 	fileStruct := &FileStruct{
 		ContentUUID: fileContentUUID,
 		AccessUUID:  fileAccessUUID,
@@ -794,7 +788,7 @@ func (userdata *User) createNewFile(filename string, content []byte, userStruct 
 	}
 	userlib.DatastoreSet(fileStructUUID, encryptedFileStruct)
 	
-	// Create InvStruct for owner
+	// create InvStruct for owner
 	invStruct := &InvStruct{
 		FileStructUUID: fileStructUUID,
 		FileEncKey:     fileEncKey,
@@ -803,13 +797,13 @@ func (userdata *User) createNewFile(filename string, content []byte, userStruct 
 		SharerUsername: userdata.Username,
 	}
 	
-	// Get owner's public key
+	// get owner's public key
 	ownerPubKey, ok := userlib.KeystoreGet(userdata.Username + "_enc")
 	if !ok {
 		return errors.New("owner public key not found")
 	}
 	
-	// Hybrid encrypt InvStruct with signature
+	// hybrid encrypt InvStruct with signature
 	hybridInv, err := hybridEncrypt(invStruct, ownerPubKey, userdata.SignKey)
 	if err != nil {
 		return err
@@ -821,7 +815,7 @@ func (userdata *User) createNewFile(filename string, content []byte, userStruct 
 	}
 	userlib.DatastoreSet(invStructUUID, hybridInvBytes)
 	
-	// Update UserStruct
+	// update UserStruct
 	hashedFilename := hashFilename(filename)
 	userStruct.Files[hashedFilename] = FilePointers{
 		FileStructUUID: fileStructUUID,
@@ -840,7 +834,7 @@ func (userdata *User) overwriteFile(filename string, content []byte, userStruct 
 	hashedFilename := hashFilename(filename)
 	filePointers := userStruct.Files[hashedFilename]
 	
-	// Get InvStruct to get keys
+	// get InvStruct to get keys
 	invStructBytes, ok := userlib.DatastoreGet(filePointers.InvStructUUID)
 	if !ok {
 		return errors.New("invitation not found")
@@ -852,17 +846,17 @@ func (userdata *User) overwriteFile(filename string, content []byte, userStruct 
 		return err
 	}
 	
-	// Decrypt and verify invitation
+	// decrypt and verify invitation
 	invStruct, err := decryptInvitation(&hybridInv, userdata.PrivEncKey)
 	if err != nil {
 		return err
 	}
 	
-	// Get file encryption and MAC keys
+	// get file encryption and MAC keys
 	fileEncKey := invStruct.FileEncKey
 	fileMACKey := invStruct.FileMACKey
 	
-	// Get FileStruct
+	// get FileStruct
 	fileStructBytes, ok := userlib.DatastoreGet(filePointers.FileStructUUID)
 	if !ok {
 		return errors.New("file struct not found")
@@ -879,7 +873,7 @@ func (userdata *User) overwriteFile(filename string, content []byte, userStruct 
 		return err
 	}
 	
-	// Get FileContent
+	// get FileContent
 	fileContentBytes, ok := userlib.DatastoreGet(fileStruct.ContentUUID)
 	if !ok {
 		return errors.New("file content not found")
@@ -896,11 +890,11 @@ func (userdata *User) overwriteFile(filename string, content []byte, userStruct 
 		return err
 	}
 	
-	// Split content into chunks and create linked list
+	// split content into chunks and create linked list
 	var headMetaUUID, tailMetaUUID uuid.UUID
 	var prevMetaUUID *uuid.UUID = nil
 	
-	// Split content into CHUNK_SIZE pieces
+	// split content into CHUNK_SIZE pieces
 	for i := 0; i < len(content); i += CHUNK_SIZE {
 		end := i + CHUNK_SIZE
 		if end > len(content) {
@@ -908,7 +902,7 @@ func (userdata *User) overwriteFile(filename string, content []byte, userStruct 
 		}
 		chunkContent := content[i:end]
 		
-		// Create UUIDs for content and metadata
+		// create UUIDs for content and metadata
 		contentUUID := uuid.New()
 		metaUUID := uuid.New()
 		
@@ -917,7 +911,7 @@ func (userdata *User) overwriteFile(filename string, content []byte, userStruct 
 		}
 		tailMetaUUID = metaUUID
 		
-		// Encrypt and store chunk content
+		// encrypt and store chunk content
 		encryptedContent, err := encryptThenMAC(chunkContent, fileEncKey, fileMACKey)
 		if err != nil {
 			return err
@@ -933,7 +927,7 @@ func (userdata *User) overwriteFile(filename string, content []byte, userStruct 
 		}
 		userlib.DatastoreSet(contentUUID, chunkContentBytes)
 		
-		// Create and store chunk metadata
+		// create and store chunk metadata
 		chunkMeta := &FileChunkMetadata{
 			ContentUUID: contentUUID,
 			NextUUID:    nil,
@@ -945,7 +939,7 @@ func (userdata *User) overwriteFile(filename string, content []byte, userStruct 
 		}
 		userlib.DatastoreSet(metaUUID, chunkMetaBytes)
 		
-		// Update previous chunk's NextUUID
+		// update previous chunk's NextUUID
 		if prevMetaUUID != nil {
 			prevMetaBytes, ok := userlib.DatastoreGet(*prevMetaUUID)
 			if !ok {
@@ -969,7 +963,7 @@ func (userdata *User) overwriteFile(filename string, content []byte, userStruct 
 		prevMetaUUID = &metaUUID
 	}
 	
-	// Handle empty file case
+	// edge: handle empty file case
 	if len(content) == 0 {
 		contentUUID := uuid.New()
 		metaUUID := uuid.New()
@@ -1003,11 +997,11 @@ func (userdata *User) overwriteFile(filename string, content []byte, userStruct 
 		userlib.DatastoreSet(metaUUID, chunkMetaBytes)
 	}
 	
-	// Update FileContent with new head and tail
+	// update FileContent with new head and tail
 	fileContent.HeadUUID = headMetaUUID
 	fileContent.TailUUID = tailMetaUUID
 	
-	// Store updated FileContent
+	// store updated FileContent
 	fileContentBytes, err = json.Marshal(fileContent)
 	if err != nil {
 		return err
@@ -1022,16 +1016,15 @@ func (userdata *User) overwriteFile(filename string, content []byte, userStruct 
 }
 
 // ============================================================================
-// APPEND TO FILE
+// Append
 // ============================================================================
 
 func (userdata *User) AppendToFile(filename string, content []byte) error {
-	// Early return for empty append
+	// early return for empty append --> we don't need to care about other stuff if there is nothing to append, different from file creation
 	if len(content) == 0 {
 		return nil
 	}
 	
-	// Load UserStruct
 	userStruct, err := loadUserStruct(userdata.Username, userdata.Password)
 	if err != nil {
 		return err
@@ -1039,13 +1032,13 @@ func (userdata *User) AppendToFile(filename string, content []byte) error {
 	
 	hashedFilename := hashFilename(filename)
 	
-	// Check if file exists
+	// check if file exists
 	filePointers, exists := userStruct.Files[hashedFilename]
 	if !exists {
 		return errors.New("file not found")
 	}
 	
-	// Get InvStruct to get keys
+	// get InvStruct to get keys
 	invStructBytes, ok := userlib.DatastoreGet(filePointers.InvStructUUID)
 	if !ok {
 		return errors.New("invitation not found")
@@ -1057,7 +1050,7 @@ func (userdata *User) AppendToFile(filename string, content []byte) error {
 		return err
 	}
 	
-	// Decrypt InvStruct
+	// decrypt InvStruct
 	invStruct, err := decryptInvitation(&hybridInv, userdata.PrivEncKey)
 	if err != nil {
 		return err
@@ -1066,7 +1059,7 @@ func (userdata *User) AppendToFile(filename string, content []byte) error {
 	fileEncKey := invStruct.FileEncKey
 	fileMACKey := invStruct.FileMACKey
 	
-	// Get FileStruct
+	// get FileStruct
 	fileStructBytes, ok := userlib.DatastoreGet(filePointers.FileStructUUID)
 	if !ok {
 		return errors.New("file struct not found")
@@ -1083,7 +1076,7 @@ func (userdata *User) AppendToFile(filename string, content []byte) error {
 		return err
 	}
 	
-	// Get FileContent
+	// get FileContent
 	fileContentBytes, ok := userlib.DatastoreGet(fileStruct.ContentUUID)
 	if !ok {
 		return errors.New("file content not found")
@@ -1100,8 +1093,7 @@ func (userdata *User) AppendToFile(filename string, content []byte) error {
 		return err
 	}
 	
-	// CRITICAL FIX: Only load tail METADATA, not content!
-	// Split content into new chunks
+	// split content into new chunks
 	var firstNewMetaUUID uuid.UUID
 	var lastNewMetaUUID uuid.UUID
 	var prevMetaUUID *uuid.UUID = nil
@@ -1113,7 +1105,7 @@ func (userdata *User) AppendToFile(filename string, content []byte) error {
 		}
 		chunkContent := content[i:end]
 		
-		// Create UUIDs for content and metadata
+		// create UUIDs for content and metadata
 		contentUUID := uuid.New()
 		metaUUID := uuid.New()
 		
@@ -1122,7 +1114,7 @@ func (userdata *User) AppendToFile(filename string, content []byte) error {
 		}
 		lastNewMetaUUID = metaUUID
 		
-		// Encrypt and store chunk content
+		// encrypt and store chunk content
 		encryptedContent, err := encryptThenMAC(chunkContent, fileEncKey, fileMACKey)
 		if err != nil {
 			return err
@@ -1138,7 +1130,7 @@ func (userdata *User) AppendToFile(filename string, content []byte) error {
 		}
 		userlib.DatastoreSet(contentUUID, chunkContentBytes)
 		
-		// Create and store chunk metadata
+		// create and store chunk metadata
 		chunkMeta := &FileChunkMetadata{
 			ContentUUID: contentUUID,
 			NextUUID:    nil,
@@ -1150,7 +1142,7 @@ func (userdata *User) AppendToFile(filename string, content []byte) error {
 		}
 		userlib.DatastoreSet(metaUUID, chunkMetaBytes)
 		
-		// Link previous chunk metadata to this one
+		// link previous chunk metadata to this new one
 		if prevMetaUUID != nil {
 			prevMetaBytes, ok := userlib.DatastoreGet(*prevMetaUUID)
 			if !ok {
@@ -1174,8 +1166,7 @@ func (userdata *User) AppendToFile(filename string, content []byte) error {
 		prevMetaUUID = &metaUUID
 	}
 	
-	// Update old tail metadata to point to first new chunk
-	// ONLY loads metadata (~50 bytes), NOT the content!
+	// update old tail metadata to point to first new chunk
 	oldTailMetaBytes, ok := userlib.DatastoreGet(fileContent.TailUUID)
 	if !ok {
 		return errors.New("tail chunk metadata not found")
@@ -1194,10 +1185,10 @@ func (userdata *User) AppendToFile(filename string, content []byte) error {
 	}
 	userlib.DatastoreSet(fileContent.TailUUID, oldTailMetaBytes)
 	
-	// Update FileContent tail pointer to last new chunk
+	// update FileContent tail pointer to last new chunk
 	fileContent.TailUUID = lastNewMetaUUID
 	
-	// Store updated FileContent
+	// store updated FileContent
 	fileContentBytes, err = json.Marshal(fileContent)
 	if err != nil {
 		return err
@@ -1212,11 +1203,10 @@ func (userdata *User) AppendToFile(filename string, content []byte) error {
 }
 
 // ============================================================================
-// LOAD FILE
+// Load file
 // ============================================================================
 
 func (userdata *User) LoadFile(filename string) (content []byte, err error) {
-	// Load UserStruct
 	userStruct, err := loadUserStruct(userdata.Username, userdata.Password)
 	if err != nil {
 		return nil, err
@@ -1224,16 +1214,16 @@ func (userdata *User) LoadFile(filename string) (content []byte, err error) {
 	
 	hashedFilename := hashFilename(filename)
 	
-	// Check if file exists
+	// check if file exists
 	filePointers, exists := userStruct.Files[hashedFilename]
 	if !exists {
 		return nil, errors.New("file not found")
 	}
 	
-	// Get InvStruct to get keys
+	// get InvStruct to get keys
 	invStructBytes, ok := userlib.DatastoreGet(filePointers.InvStructUUID)
 	if !ok {
-		// File might have been revoked - do lazy update
+		// file must hv been revoked --> do lazy update --> since when alice revokes for bob, she cannot enter bob's metadata to edit his file access map)
 		delete(userStruct.Files, hashedFilename)
 		storeUserStruct(userdata.Username, userdata.Password, userStruct)
 		return nil, errors.New("file access revoked or invitation not found")
@@ -1245,10 +1235,10 @@ func (userdata *User) LoadFile(filename string) (content []byte, err error) {
 		return nil, err
 	}
 	
-	// Decrypt InvStruct
+	// decrypt InvStruct
 	invStruct, err := decryptInvitation(&hybridInv, userdata.PrivEncKey)
 	if err != nil {
-		// Failed to decrypt - likely revoked with new keys
+		// failed to decrypt --> likely revoked with new keys --> do lazy update
 		delete(userStruct.Files, hashedFilename)
 		storeUserStruct(userdata.Username, userdata.Password, userStruct)
 		return nil, errors.New("file access revoked - decryption failed")
@@ -1274,7 +1264,7 @@ func (userdata *User) LoadFile(filename string) (content []byte, err error) {
 		return nil, err
 	}
 	
-	// Get FileContent
+	// get fileContent
 	fileContentBytes, ok := userlib.DatastoreGet(fileStruct.ContentUUID)
 	if !ok {
 		return nil, errors.New("file content not found")
@@ -1291,12 +1281,11 @@ func (userdata *User) LoadFile(filename string) (content []byte, err error) {
 		return nil, err
 	}
 	
-	// Traverse linked list of chunks and concatenate content
+	// traverse linked list of chunks and concatenate content
 	var fullContent []byte
 	currentMetaUUID := fileContent.HeadUUID
 	
 	for {
-		// Get current chunk metadata
 		metaBytes, ok := userlib.DatastoreGet(currentMetaUUID)
 		if !ok {
 			return nil, errors.New("chunk metadata not found")
@@ -1308,7 +1297,7 @@ func (userdata *User) LoadFile(filename string) (content []byte, err error) {
 			return nil, err
 		}
 		
-		// Get chunk content using ContentUUID from metadata
+		// get chunk content using ContentUUID from metadata
 		contentBytes, ok := userlib.DatastoreGet(chunkMeta.ContentUUID)
 		if !ok {
 			return nil, errors.New("chunk content not found")
@@ -1320,16 +1309,14 @@ func (userdata *User) LoadFile(filename string) (content []byte, err error) {
 			return nil, err
 		}
 		
-		// Decrypt chunk content
+		// decrypt chunk content
 		decryptedChunk, err := verifyMACThenDecrypt(chunkContent.EncryptedContent, fileEncKey, fileMACKey)
 		if err != nil {
 			return nil, err
 		}
 		
-		// Append to full content
 		fullContent = append(fullContent, decryptedChunk...)
 		
-		// Move to next chunk
 		if chunkMeta.NextUUID == nil {
 			break
 		}
@@ -1340,19 +1327,18 @@ func (userdata *User) LoadFile(filename string) (content []byte, err error) {
 }
 
 // ============================================================================
-// CREATE INVITATION
+// Create invitation
 // ============================================================================
 
 func (userdata *User) CreateInvitation(filename string, recipientUsername string) (
 	invitationPtr uuid.UUID, err error) {
 	
-	// Check if recipient exists
+	// edge: check if recipient exists
 	recipientPubKey, ok := userlib.KeystoreGet(recipientUsername + "_enc")
 	if !ok {
 		return uuid.Nil, errors.New("recipient user does not exist")
 	}
 	
-	// Load UserStruct
 	userStruct, err := loadUserStruct(userdata.Username, userdata.Password)
 	if err != nil {
 		return uuid.Nil, err
@@ -1360,13 +1346,13 @@ func (userdata *User) CreateInvitation(filename string, recipientUsername string
 	
 	hashedFilename := hashFilename(filename)
 	
-	// Check if file exists
+	// edge: check if file exists
 	filePointers, exists := userStruct.Files[hashedFilename]
 	if !exists {
 		return uuid.Nil, errors.New("file not found in personal namespace")
 	}
 	
-	// Get InvStruct to get file keys
+	// get InvStruct to get file keys
 	invStructBytes, ok := userlib.DatastoreGet(filePointers.InvStructUUID)
 	if !ok {
 		return uuid.Nil, errors.New("invitation not found")
@@ -1378,7 +1364,7 @@ func (userdata *User) CreateInvitation(filename string, recipientUsername string
 		return uuid.Nil, err
 	}
 	
-	// Decrypt InvStruct
+	// decrypt InvStruct
 	invStruct, err := decryptInvitation(&hybridInv, userdata.PrivEncKey)
 	if err != nil {
 		return uuid.Nil, err
@@ -1388,10 +1374,10 @@ func (userdata *User) CreateInvitation(filename string, recipientUsername string
 	fileMACKey := invStruct.FileMACKey
 	fileStructUUID := invStruct.FileStructUUID
 	
-	// Verify I still have valid access by checking if I can decrypt the FileStruct
+	// verify I still have valid access by checking if I can decrypt the FileStruct
 	fileStructBytes, ok := userlib.DatastoreGet(fileStructUUID)
 	if !ok {
-		// Remove from my namespace since file no longer exists
+		// lazy update vibes
 		delete(userStruct.Files, hashedFilename)
 		storeUserStruct(userdata.Username, userdata.Password, userStruct)
 		return uuid.Nil, errors.New("file no longer exists")
@@ -1399,16 +1385,16 @@ func (userdata *User) CreateInvitation(filename string, recipientUsername string
 	
 	_, err = verifyMACThenDecrypt(fileStructBytes, fileEncKey, fileMACKey)
 	if err != nil {
-		// My access has been revoked - remove from namespace
+		// lazy update vibes
 		delete(userStruct.Files, hashedFilename)
 		storeUserStruct(userdata.Username, userdata.Password, userStruct)
 		return uuid.Nil, errors.New("access has been revoked - cannot create invitation")
 	}
 	
-	// Get my FileAccessNode UUID
+	// get my FileAccessNode UUID
 	myNodeUUID := getFileAccessNodeUUID(userdata.Username, fileStructUUID)
 	
-	// Create FileAccessNode for recipient
+	// create FileAccessNode for recipient --> alice sharing with bob, alice will create for bob
 	recipientNodeUUID := getFileAccessNodeUUID(recipientUsername, fileStructUUID)
 	recipientInvUUID := getInvStructUUID(recipientUsername, fileStructUUID)
 	
@@ -1433,7 +1419,7 @@ func (userdata *User) CreateInvitation(filename string, recipientUsername string
 	
 	userlib.DatastoreSet(recipientNodeUUID, encryptedRecipientNode)
 	
-	// Update my FileAccessNode to include recipient in sharees
+	// update my FileAccessNode to include recipient in sharees
 	myNodeBytes, ok := userlib.DatastoreGet(myNodeUUID)
 	if !ok {
 		return uuid.Nil, errors.New("my access node not found")
@@ -1450,7 +1436,7 @@ func (userdata *User) CreateInvitation(filename string, recipientUsername string
 		return uuid.Nil, err
 	}
 	
-	// Add recipient to my sharees list
+	// add recipient to my sharees list
 	myNode.ShareeUUIDs = append(myNode.ShareeUUIDs, recipientNodeUUID)
 	
 	myNodeBytes, err = json.Marshal(myNode)
@@ -1465,7 +1451,7 @@ func (userdata *User) CreateInvitation(filename string, recipientUsername string
 	
 	userlib.DatastoreSet(myNodeUUID, encryptedMyNode)
 	
-	// Create InvStruct for recipient
+	// create InvStruct 
 	recipientInvStruct := &InvStruct{
 		FileStructUUID: fileStructUUID,
 		FileEncKey:     fileEncKey,
@@ -1474,7 +1460,7 @@ func (userdata *User) CreateInvitation(filename string, recipientUsername string
 		SharerUsername: userdata.Username,
 	}
 	
-	// Hybrid encrypt InvStruct for recipient with our signature
+	// hybrid encrypt InvStruct for recipient with our signature
 	recipientHybridInv, err := hybridEncrypt(recipientInvStruct, recipientPubKey, userdata.SignKey)
 	if err != nil {
 		return uuid.Nil, err
@@ -1487,16 +1473,14 @@ func (userdata *User) CreateInvitation(filename string, recipientUsername string
 	
 	userlib.DatastoreSet(recipientInvUUID, recipientHybridInvBytes)
 	
-	// Return the invitation UUID
 	return recipientInvUUID, nil
 }
 
 // ============================================================================
-// ACCEPT INVITATION
+// Accept invitation
 // ============================================================================
 
 func (userdata *User) AcceptInvitation(senderUsername string, invitationPtr uuid.UUID, filename string) error {
-	// Load UserStruct
 	userStruct, err := loadUserStruct(userdata.Username, userdata.Password)
 	if err != nil {
 		return err
@@ -1504,12 +1488,12 @@ func (userdata *User) AcceptInvitation(senderUsername string, invitationPtr uuid
 	
 	hashedFilename := hashFilename(filename)
 	
-	// Check if filename already exists in user's namespace
+	// edge: check if filename already exists in user's namespace
 	if _, exists := userStruct.Files[hashedFilename]; exists {
 		return errors.New("filename already exists in personal namespace")
 	}
 	
-	// Get invitation from datastore
+	// get invitation from datastore
 	invBytes, ok := userlib.DatastoreGet(invitationPtr)
 	if !ok {
 		return errors.New("invitation not found or has been revoked")
@@ -1521,38 +1505,36 @@ func (userdata *User) AcceptInvitation(senderUsername string, invitationPtr uuid
 		return err
 	}
 	
-	// Decrypt and verify invitation (decryptInvitation verifies signature)
+	// decrypt and verify invitation
 	invStruct, err := decryptInvitation(&hybridInv, userdata.PrivEncKey)
 	if err != nil {
 		return errors.New("failed to decrypt/verify invitation - may be tampered or revoked")
 	}
 	
-	// Verify the invitation claims to be from the expected sender
+	// verify origin is same as expected sender
 	if invStruct.SharerUsername != senderUsername {
 		return errors.New("invitation not from claimed sender - security violation")
 	}
 	
 	fileStructUUID := invStruct.FileStructUUID
 	
-	// Try to access the file to verify invitation is valid (not revoked)
+	// try to access the file to verify invitation is valid (not revoked), and then decrypt
 	fileStructBytes, ok := userlib.DatastoreGet(fileStructUUID)
 	if !ok {
 		return errors.New("file no longer exists or invitation has been revoked")
 	}
 	
-	// Try to decrypt with provided keys to ensure they're valid
 	_, err = verifyMACThenDecrypt(fileStructBytes, invStruct.FileEncKey, invStruct.FileMACKey)
 	if err != nil {
 		return errors.New("invitation has been revoked - keys no longer valid")
 	}
 	
-	// Add file to my UserStruct
+	// add file to my UserStruct --> difference from the usual access file
 	userStruct.Files[hashedFilename] = FilePointers{
 		FileStructUUID: fileStructUUID,
 		InvStructUUID:  invitationPtr,
 	}
 	
-	// Store updated UserStruct
 	err = storeUserStruct(userdata.Username, userdata.Password, userStruct)
 	if err != nil {
 		return err
@@ -1562,11 +1544,11 @@ func (userdata *User) AcceptInvitation(senderUsername string, invitationPtr uuid
 }
 
 // ============================================================================
-// REVOKE ACCESS
+// Revoke access
 // ============================================================================
 
 func (userdata *User) RevokeAccess(filename string, recipientUsername string) error {
-	// Load UserStruct
+
 	userStruct, err := loadUserStruct(userdata.Username, userdata.Password)
 	if err != nil {
 		return err
@@ -1574,13 +1556,13 @@ func (userdata *User) RevokeAccess(filename string, recipientUsername string) er
 	
 	hashedFilename := hashFilename(filename)
 	
-	// Check if file exists
+	// edge: check if file exists
 	filePointers, exists := userStruct.Files[hashedFilename]
 	if !exists {
 		return errors.New("file not found in personal namespace")
 	}
 	
-	// Get InvStruct to get file keys
+	// get InvStruct to get file keys
 	invStructBytes, ok := userlib.DatastoreGet(filePointers.InvStructUUID)
 	if !ok {
 		return errors.New("invitation not found")
@@ -1592,7 +1574,7 @@ func (userdata *User) RevokeAccess(filename string, recipientUsername string) er
 		return err
 	}
 	
-	// Decrypt InvStruct
+	// decrypt InvStruct
 	invStruct, err := decryptInvitation(&hybridInv, userdata.PrivEncKey)
 	if err != nil {
 		return err
@@ -1602,10 +1584,9 @@ func (userdata *User) RevokeAccess(filename string, recipientUsername string) er
 	oldFileMACKey := invStruct.FileMACKey
 	fileStructUUID := invStruct.FileStructUUID
 	
-	// Generate NEW file keys
+	// G=generate NEW file keys
 	newFileEncKey, newFileMACKey := deriveFileKeys()
 	
-	// Get FileStruct
 	fileStructBytes, ok := userlib.DatastoreGet(fileStructUUID)
 	if !ok {
 		return errors.New("file struct not found")
@@ -1622,7 +1603,7 @@ func (userdata *User) RevokeAccess(filename string, recipientUsername string) er
 		return err
 	}
 	
-	// Get FileAccess
+	// get FileAccess
 	fileAccessBytes, ok := userlib.DatastoreGet(fileStruct.AccessUUID)
 	if !ok {
 		return errors.New("file access not found")
@@ -1639,7 +1620,7 @@ func (userdata *User) RevokeAccess(filename string, recipientUsername string) er
 		return err
 	}
 	
-	// Get owner (my) node
+	// get owner node
 	ownerNodeBytes, ok := userlib.DatastoreGet(fileAccess.OwnerNodeUUID)
 	if !ok {
 		return errors.New("owner node not found")
@@ -1656,10 +1637,10 @@ func (userdata *User) RevokeAccess(filename string, recipientUsername string) er
 		return err
 	}
 	
-	// Find the revoked user's node UUID in my sharees
+	// find the revoked user's node UUID in my sharees
 	revokedNodeUUID := getFileAccessNodeUUID(recipientUsername, fileStructUUID)
 	
-	// Check if recipient is in my direct sharees
+	// edge: Check if recipient is in my direct sharees
 	found := false
 	newShareeList := []uuid.UUID{}
 	for _, shareeUUID := range ownerNode.ShareeUUIDs {
@@ -1675,14 +1656,14 @@ func (userdata *User) RevokeAccess(filename string, recipientUsername string) er
 		return errors.New("recipient is not a direct sharee")
 	}
 	
-	// Update owner node with new sharee list
+	// update owner node with new sharee list
 	ownerNode.ShareeUUIDs = newShareeList
 	
-	// Collect all valid user nodes (not revoked)
+	// collect all unrevoked user nodes
 	validNodes := []FileAccessNode{ownerNode}
 	validNodeUUIDs := []uuid.UUID{fileAccess.OwnerNodeUUID}
 	
-	// BFS to collect all valid nodes (excluding revoked subtree)
+	// BFS to collect all unrevoked nodes
 	queue := []uuid.UUID{}
 	for _, shareeUUID := range ownerNode.ShareeUUIDs {
 		queue = append(queue, shareeUUID)
@@ -1692,15 +1673,14 @@ func (userdata *User) RevokeAccess(filename string, recipientUsername string) er
 		currentNodeUUID := queue[0]
 		queue = queue[1:]
 		
-		// Get node
 		nodeBytes, ok := userlib.DatastoreGet(currentNodeUUID)
 		if !ok {
-			continue // Skip if not found
+			continue
 		}
 		
 		decryptedNode, err := verifyMACThenDecrypt(nodeBytes, oldFileEncKey, oldFileMACKey)
 		if err != nil {
-			continue // Skip if can't decrypt
+			continue // Skip if can't decrypt, just escape 
 		}
 		
 		var node FileAccessNode
@@ -1712,14 +1692,14 @@ func (userdata *User) RevokeAccess(filename string, recipientUsername string) er
 		validNodes = append(validNodes, node)
 		validNodeUUIDs = append(validNodeUUIDs, currentNodeUUID)
 		
-		// Add children to queue
+		// add children to queue, bfs method
 		for _, shareeUUID := range node.ShareeUUIDs {
 			queue = append(queue, shareeUUID)
 		}
 	}
 	
-	// Re-encrypt all file data structures with new keys
-	// 1. Re-encrypt FileStruct
+	// re-encrypt all file data structures with new keys
+	// 1. re-encrypt FileStruct
 	fileStructBytes, err = json.Marshal(fileStruct)
 	if err != nil {
 		return err
@@ -1730,7 +1710,7 @@ func (userdata *User) RevokeAccess(filename string, recipientUsername string) er
 	}
 	userlib.DatastoreSet(fileStructUUID, encryptedFileStruct)
 	
-	// 2. Re-encrypt FileAccess
+	// 2. re-encrypt FileAccess
 	fileAccessBytes, err = json.Marshal(fileAccess)
 	if err != nil {
 		return err
@@ -1741,7 +1721,7 @@ func (userdata *User) RevokeAccess(filename string, recipientUsername string) er
 	}
 	userlib.DatastoreSet(fileStruct.AccessUUID, encryptedFileAccess)
 	
-	// 3. Re-encrypt FileContent
+	// 3. re-encrypt FileContent
 	fileContentBytes, ok := userlib.DatastoreGet(fileStruct.ContentUUID)
 	if !ok {
 		return errors.New("file content not found")
@@ -1758,7 +1738,7 @@ func (userdata *User) RevokeAccess(filename string, recipientUsername string) er
 		return err
 	}
 	
-	// Re-encrypt FileContent with new keys
+	// re-encrypt FileContent with new keys
 	fileContentBytes, err = json.Marshal(fileContent)
 	if err != nil {
 		return err
@@ -1769,7 +1749,7 @@ func (userdata *User) RevokeAccess(filename string, recipientUsername string) er
 	}
 	userlib.DatastoreSet(fileStruct.ContentUUID, encryptedFileContent)
 	
-	// 4. Re-encrypt all chunks (both content and metadata)
+	// 4. re-encrypt all chunks (both content and metadata)
 	currentMetaUUID := fileContent.HeadUUID
 	for {
 		// Get metadata
@@ -1796,13 +1776,13 @@ func (userdata *User) RevokeAccess(filename string, recipientUsername string) er
 			break
 		}
 		
-		// Decrypt chunk content with old keys
+		// decrypt chunk content with old keys
 		decryptedChunkContent, err := verifyMACThenDecrypt(chunkContent.EncryptedContent, oldFileEncKey, oldFileMACKey)
 		if err != nil {
 			break
 		}
 		
-		// Re-encrypt with new keys
+		// re-encrypt with new keys
 		reEncryptedContent, err := encryptThenMAC(decryptedChunkContent, newFileEncKey, newFileMACKey)
 		if err != nil {
 			break
@@ -1810,26 +1790,23 @@ func (userdata *User) RevokeAccess(filename string, recipientUsername string) er
 		
 		chunkContent.EncryptedContent = reEncryptedContent
 		
-		// Store re-encrypted content
+		// store re-encrypted content
 		contentBytes, err = json.Marshal(chunkContent)
 		if err != nil {
 			break
 		}
 		userlib.DatastoreSet(chunkMeta.ContentUUID, contentBytes)
-		
-		// Metadata doesn't need re-encryption (it's not encrypted with file keys)
-		// Just move to next chunk
+
 		if chunkMeta.NextUUID == nil {
 			break
 		}
 		currentMetaUUID = *chunkMeta.NextUUID
 	}
 	
-	// 5. Re-encrypt all valid FileAccessNodes and create new InvStructs
+	// 5. re-encrypt all valid FileAccessNodes and create new InvStructs
 	for i, node := range validNodes {
 		nodeUUID := validNodeUUIDs[i]
 		
-		// Re-encrypt node
 		nodeBytes, err := json.Marshal(node)
 		if err != nil {
 			continue
@@ -1840,26 +1817,24 @@ func (userdata *User) RevokeAccess(filename string, recipientUsername string) er
 		}
 		userlib.DatastoreSet(nodeUUID, encryptedNode)
 		
-		// Get username from node
 		username := node.Username
 		
-		// Get user's public key
+		// get user's public key
 		userPubKey, ok := userlib.KeystoreGet(username + "_enc")
 		if !ok {
-			continue // Skip if can't find public key
+			continue 
 		}
 		
-		// Create new InvStruct for this user with new keys
-		// Owner is re-sharing, so SharerUsername is the owner
+		// create new InvStruct for this user with new keys. owner is re-sharing, so SharerUsername is the owner
 		newInvStruct := &InvStruct{
 			FileStructUUID: fileStructUUID,
 			FileEncKey:     newFileEncKey,
 			FileMACKey:     newFileMACKey,
 			SharerNodeUUID: nodeUUID,
-			SharerUsername: userdata.Username, // Owner is the sharer after revocation
+			SharerUsername: userdata.Username, 
 		}
 		
-		// Hybrid encrypt new InvStruct with owner's signature
+		// hybrid encrypt new InvStruct with owner's signature
 		newHybridInv, err := hybridEncrypt(newInvStruct, userPubKey, userdata.SignKey)
 		if err != nil {
 			continue
@@ -1870,7 +1845,7 @@ func (userdata *User) RevokeAccess(filename string, recipientUsername string) er
 			continue
 		}
 		
-		// Overwrite old invitation with new one (same UUID!)
+		// overwrite old invitation with new one (same UUID)
 		userlib.DatastoreSet(node.InvStructUUID, newHybridInvBytes)
 	}
 	
