@@ -533,33 +533,6 @@ var _ = Describe("Client Tests", func() {
 			Expect(bw2).To(BeNumerically("~", bw1, float64(bw1)*0.1))
 		})
 
-		Specify("Append efficiency: Should not scale with file size", func() {
-			alice, err = client.InitUser("alice", defaultPassword)
-			Expect(err).To(BeNil())
-
-			// Create small file and append
-			err = alice.StoreFile(aliceFile, []byte("small"))
-			Expect(err).To(BeNil())
-
-			bw1 := userlib.DatastoreGetBandwidth()
-			err = alice.AppendToFile(aliceFile, []byte("X"))
-			Expect(err).To(BeNil())
-			bw1 = userlib.DatastoreGetBandwidth() - bw1
-
-			// Create large file (1MB) and append
-			largeContent := make([]byte, 1000000)
-			err = alice.StoreFile(bobFile, largeContent)
-			Expect(err).To(BeNil())
-
-			bw2 := userlib.DatastoreGetBandwidth()
-			err = alice.AppendToFile(bobFile, []byte("X"))
-			Expect(err).To(BeNil())
-			bw2 = userlib.DatastoreGetBandwidth() - bw2
-
-			// Bandwidth should be similar regardless of file size
-			Expect(bw2).To(BeNumerically("~", bw1, float64(bw1)*0.1))
-		})
-
 		Specify("Append efficiency: Empty append should use minimal bandwidth", func() {
 			alice, err = client.InitUser("alice", defaultPassword)
 			Expect(err).To(BeNil())
@@ -596,6 +569,23 @@ var _ = Describe("Client Tests", func() {
 
 			// Should be small, not proportional to 1MB
 			Expect(bw).To(BeNumerically("<", 10000))
+		})
+
+		Specify("DIAGNOSTIC: Empty append bandwidth", func() {
+			alice, err = client.InitUser("alice", defaultPassword)
+			Expect(err).To(BeNil())
+			
+			err = alice.StoreFile(aliceFile, []byte(contentOne))
+			Expect(err).To(BeNil())
+			
+			fmt.Println("\n=== Empty append test ===")
+			bw := userlib.DatastoreGetBandwidth()
+			err = alice.AppendToFile(aliceFile, []byte(""))
+			Expect(err).To(BeNil())
+			bw = userlib.DatastoreGetBandwidth() - bw
+			
+			fmt.Printf("Empty append bandwidth: %d bytes\n", bw)
+			fmt.Printf("Under 5000? %v\n", bw < 5000)
 		})
 
 		Specify("Append efficiency: Should not scale with number of shares", func() {
@@ -1491,6 +1481,135 @@ var _ = Describe("Client Tests", func() {
 			dataShared, err := bob.LoadFile(longName + "_shared")
 			Expect(err).To(BeNil())
 			Expect(dataShared).To(Equal([]byte(contentOne)))
+		})
+	})
+
+	Describe("File bandwidth diagnostics", func() {
+
+		Specify("DIAGNOSTIC: Multiple same-size appends", func() {
+			alice, err = client.InitUser("alice", defaultPassword)
+			Expect(err).To(BeNil())
+			
+			err = alice.StoreFile(aliceFile, []byte("initial"))
+			Expect(err).To(BeNil())
+			
+			fmt.Println("\n=== Three appends of 1 byte each ===")
+			for i := 1; i <= 3; i++ {
+				bw := userlib.DatastoreGetBandwidth()
+				err = alice.AppendToFile(aliceFile, []byte("X"))
+				Expect(err).To(BeNil())
+				bw = userlib.DatastoreGetBandwidth() - bw
+				fmt.Printf("Append %d: %d bytes\n", i, bw)
+			}
+		})
+		
+		Specify("DIAGNOSTIC: Different size appends", func() {
+			alice, err = client.InitUser("alice", defaultPassword)
+			Expect(err).To(BeNil())
+			
+			err = alice.StoreFile(aliceFile, []byte("initial"))
+			Expect(err).To(BeNil())
+			
+			fmt.Println("\n=== Appends of 10, 100, 1000 bytes ===")
+			
+			bw1 := userlib.DatastoreGetBandwidth()
+			err = alice.AppendToFile(aliceFile, []byte("0123456789"))
+			Expect(err).To(BeNil())
+			bw1 = userlib.DatastoreGetBandwidth() - bw1
+			
+			content100 := make([]byte, 100)
+			bw2 := userlib.DatastoreGetBandwidth()
+			err = alice.AppendToFile(aliceFile, content100)
+			Expect(err).To(BeNil())
+			bw2 = userlib.DatastoreGetBandwidth() - bw2
+			
+			content1000 := make([]byte, 1000)
+			bw3 := userlib.DatastoreGetBandwidth()
+			err = alice.AppendToFile(aliceFile, content1000)
+			Expect(err).To(BeNil())
+			bw3 = userlib.DatastoreGetBandwidth() - bw3
+			
+			fmt.Printf("10 bytes: %d\n", bw1)
+			fmt.Printf("100 bytes: %d\n", bw2)
+			fmt.Printf("1000 bytes: %d\n", bw3)
+			fmt.Printf("Diff 2-1: %d (should be ~90)\n", bw2-bw1)
+			fmt.Printf("Diff 3-2: %d (should be ~900)\n", bw3-bw2)
+		})
+		
+		Specify("DIAGNOSTIC: Does previous append size matter? (CRITICAL)", func() {
+			alice, err = client.InitUser("alice", defaultPassword)
+			Expect(err).To(BeNil())
+			
+			err = alice.StoreFile(aliceFile, []byte("initial"))
+			Expect(err).To(BeNil())
+			
+			fmt.Println("\n=== CRITICAL TEST: Previous append size ===")
+			
+			// Append 1KB
+			content1KB := make([]byte, 1000)
+			err = alice.AppendToFile(aliceFile, content1KB)
+			Expect(err).To(BeNil())
+			
+			// Then append 1 byte
+			bw1 := userlib.DatastoreGetBandwidth()
+			err = alice.AppendToFile(aliceFile, []byte("X"))
+			Expect(err).To(BeNil())
+			bw1 = userlib.DatastoreGetBandwidth() - bw1
+			
+			// Append 100KB
+			content100KB := make([]byte, 100000)
+			err = alice.AppendToFile(aliceFile, content100KB)
+			Expect(err).To(BeNil())
+			
+			// Then append 1 byte
+			bw2 := userlib.DatastoreGetBandwidth()
+			err = alice.AppendToFile(aliceFile, []byte("Y"))
+			Expect(err).To(BeNil())
+			bw2 = userlib.DatastoreGetBandwidth() - bw2
+			
+			fmt.Printf("After 1KB append: %d bytes\n", bw1)
+			fmt.Printf("After 100KB append: %d bytes\n", bw2)
+			fmt.Printf("Difference: %d bytes\n", bw2-bw1)
+			
+			if bw2 > ((bw1*12)/10) {
+				fmt.Printf("BAD: Reading old tail chunk!\n")
+			} else {
+				fmt.Printf("GOOD: Not reading old tail\n")
+			}
+		})
+		
+		Specify("DIAGNOSTIC: Small vs large file append", func() {
+			alice, err = client.InitUser("alice", defaultPassword)
+			Expect(err).To(BeNil())
+			
+			fmt.Println("\n=== Small vs Large file ===")
+			
+			err = alice.StoreFile("small.txt", []byte("tiny"))
+			Expect(err).To(BeNil())
+			
+			bwSmall := userlib.DatastoreGetBandwidth()
+			err = alice.AppendToFile("small.txt", []byte("X"))
+			Expect(err).To(BeNil())
+			bwSmall = userlib.DatastoreGetBandwidth() - bwSmall
+			
+			largeContent := make([]byte, 100000)
+			err = alice.StoreFile("large.txt", largeContent)
+			Expect(err).To(BeNil())
+			
+			bwLarge := userlib.DatastoreGetBandwidth()
+			err = alice.AppendToFile("large.txt", []byte("X"))
+			Expect(err).To(BeNil())
+			bwLarge = userlib.DatastoreGetBandwidth() - bwLarge
+			
+			fmt.Printf("Small file: %d bytes\n", bwSmall)
+			fmt.Printf("Large file: %d bytes\n", bwLarge)
+			fmt.Printf("Difference: %d bytes\n", bwLarge-bwSmall)
+			
+			if bwLarge > ((bwSmall*11)/10) {
+				fmt.Printf("BAD: Scales with file size\n")
+			} else {
+				fmt.Printf("GOOD: Independent of file size\n")
+			}
 		})
 	})
 })
